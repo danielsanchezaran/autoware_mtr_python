@@ -8,6 +8,7 @@
 
   <arg name="output/objects" default="mtr/objects"/>
   <arg name="output/trajectory" default="mtr/trajectory"/>
+  <arg name="output/trajectories" default="mtr/trajectories"/>
 
 
   <arg name="lanelet_file" default="$(find-pkg-share autoware_mtr_python)/data/odaiba.lanelet2_map.osm"/>
@@ -20,6 +21,7 @@
     <remap from="~/input/tracked_objects" to="$(var input/tracked_objects)"/>
     <remap from="~/output/objects" to="$(var output/objects)"/>
     <remap from="~/output/trajectory" to="$(var output/trajectory)"/>
+    <remap from="~/output/trajectories" to="$(var output/trajectories)"/>
     <param name="lanelet_file" value="$(var lanelet_file)"/>
     <param name="intention_point_file" value="$(var intention_point_file)"/>
     <param name="build_only" value="$(var build_only)"/>

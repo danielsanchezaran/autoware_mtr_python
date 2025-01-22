@@ -20,7 +20,12 @@ from rcl_interfaces.msg import ParameterDescriptor
 from utils.polyline import TargetCentricPolyline
 
 from autoware_perception_msgs.msg import PredictedObjects
-from autoware_planning_msgs.msg import Trajectory
+from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
+from autoware_new_planning_msgs.msg import Trajectories
+from unique_identifier_msgs.msg import UUID as RosUUID
+from autoware_mtr.dataclass.agent import _str_to_uuid_msg
+
+from autoware_perception_msgs.msg import TrackedObject
 from autoware_perception_msgs.msg import TrackedObjects
 
 from awml_pred.dataclass import AWMLStaticMap
@@ -32,7 +37,7 @@ from utils.load import LoadIntentionPoint
 from autoware_mtr.conversion.ego import from_odometry
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
 from autoware_mtr.conversion.misc import timestamp2ms
-from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectory
+from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectory, to_trajectories
 from autoware_mtr.datatype import AgentLabel
 from autoware_mtr.geometry import rotate_along_z
 from autoware_mtr.dataclass.history import AgentHistory
@@ -190,10 +195,14 @@ class MTRNode(Node):
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
+
+        self._generator_uuid: RosUUID = _str_to_uuid_msg("autoware_mtr_py_")
         # publisher
         self._publisher = self.create_publisher(PredictedObjects, "~/output/objects", qos_profile)
         self._ego_traj_publisher = self.create_publisher(
             Trajectory, "~/output/trajectory", qos_profile)
+        self._ego_trajectories_publisher = self.create_publisher(
+            Trajectories, "~/output/trajectories", qos_profile)
 
     def _tracked_objects_callback(self, msg: TrackedObjects) -> None:
         timestamp = timestamp2ms(msg.header)
@@ -247,7 +256,15 @@ class MTRNode(Node):
                                  pred_trajs=pred_trajs,
                                  score_threshold=self._score_threshold,)[0]
         self._ego_traj_publisher.publish(ego_traj)
-        # # convert to ROS msg
+
+        ego_multiple_trajs = to_trajectories(header=msg.header,
+                                             infos=[info],
+                                             pred_scores=pred_scores,
+                                             pred_trajs=pred_trajs,
+                                             score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
+
+        self._ego_trajectories_publisher.publish(ego_multiple_trajs)
+        # convert to ROS msg
         pred_objs = to_predicted_objects(
             header=msg.header,
             infos=[info],

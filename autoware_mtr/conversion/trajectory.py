@@ -8,6 +8,10 @@ from autoware_mtr.dataclass.agent import OriginalInfo
 # from autoware_perception_msgs.msg import PredictedObjects
 # from autoware_perception_msgs.msg import PredictedObject
 from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
+from autoware_new_planning_msgs.msg import Trajectories, TrajectoryGeneratorInfo
+from autoware_new_planning_msgs.msg import Trajectory as NewTrajectory
+from unique_identifier_msgs.msg import UUID as RosUUID
+from std_msgs.msg import String
 
 
 from collections import deque
@@ -57,6 +61,39 @@ def get_relative_history(reference_state: AgentState, history: deque[AgentState]
 __all__ = ("to_predicted_objects",)
 
 
+def to_trajectories(header: Header,
+                    infos: Sequence[OriginalInfo],
+                    pred_scores: NDArray,
+                    pred_trajs: NDArray,
+                    score_threshold: float,
+                    generator_uuid: RosUUID,
+                    ) -> Trajectories:
+    """Convert predictions of ego to Trajectory msg.
+
+    Args:
+        header (Header): Header of the input message.
+        infos (Sequence[OriginalInfo]): List of original message information.
+        pred_scores (NDArray): Predicted score tensor in the shape of (N, M).
+        pred_trajs (NDArray): Predicted trajectory tensor in the shape of (N, M, T, 4).
+        score_threshold (float): Threshold value of score.
+
+    Returns:
+        Trajectories: Instanced msg.
+    """
+    output: Trajectories = Trajectories()
+    # convert each object
+    info, cur_scores, cur_trajs = infos[0], pred_scores[0], pred_trajs[0]
+    output.trajectories = _to_new_trajectories(
+        header, info, cur_scores, cur_trajs, score_threshold, generator_uuid)
+    generator_name: String = String()
+    generator_name.data = "mtr"
+    generator_info = TrajectoryGeneratorInfo(
+        generator_id=generator_uuid, generator_name=generator_name)
+    output.generator_info = [generator_info for _ in range(len(output.trajectories))]
+
+    return output
+
+
 def to_trajectory(
     header: Header,
     infos: Sequence[OriginalInfo],
@@ -83,6 +120,39 @@ def to_trajectory(
         best_traj = target_trajs[np.argmax(cur_scores)]
         best_traj.header = header
         output.append(best_traj)
+    return output
+
+
+def _to_new_trajectories(header: Header,
+                         info: OriginalInfo,
+                         pred_scores: NDArray,
+                         pred_trajs: NDArray,
+                         score_threshold: float,
+                         generator_uuid: RosUUID,
+                         ) -> Trajectories:
+    """Convert prediction of a single object to Trajectory msg.
+
+    Args:
+        info (ObjectInfo): Object original info.
+        pred_scores (NDArray): Predicted score in the shape of (M,).
+        pred_trajs (NDArray): Predicted trajectory in the shape of (M, T, 4).
+        score_threshold (float): Threshold value of score.
+
+    Returns:
+        Trajectory: Instanced msg.
+    """
+
+    output: List[Trajectories] = []
+
+    # # convert each mode
+    for cur_score, cur_traj in zip(pred_scores, pred_trajs, strict=True):
+        if cur_score < score_threshold:
+            continue
+        cur_mode_traj: NewTrajectory = _to_traj(info, cur_traj, get_new_trajectory=True)
+        cur_mode_traj.header = header
+        cur_mode_traj.generator_id = generator_uuid
+        output.append(cur_mode_traj)
+
     return output
 
 
@@ -132,6 +202,7 @@ def _yaw_to_quaternion(yaw: float) -> Quaternion:
 def _to_traj(
     info: OriginalInfo,
     pred_traj: NDArray,
+    get_new_trajectory: bool = False,
 ) -> Trajectory:
     """Convert prediction of a single mode to Trajectory msg.
 
@@ -142,7 +213,7 @@ def _to_traj(
     Returns:
         Trajectory: Instanced msg.
     """
-    output = Trajectory()
+    output = NewTrajectory() if get_new_trajectory else Trajectory()
     time_step = 0.1  # TODO(ktro2828): use specific value?
     for i, mode_point in enumerate(pred_traj):  # (x, y, vx, vy)
         x, y, _, _, _, vx, vy = mode_point

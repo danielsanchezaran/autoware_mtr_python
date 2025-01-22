@@ -8,6 +8,7 @@
   <license>TODO: License declaration</license>
 
   <exec_depend>autoware_perception_msgs</exec_depend>
+  <exec_depend>autoware_new_planning_msgs</exec_depend>
   <exec_depend>autoware_planning_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
