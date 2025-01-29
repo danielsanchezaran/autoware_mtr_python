@@ -87,9 +87,8 @@ def to_trajectories(header: Header,
         header, info, cur_scores, cur_trajs, score_threshold, generator_uuid)
     generator_name: String = String()
     generator_name.data = "mtr"
-    generator_info = TrajectoryGeneratorInfo(
-        generator_id=generator_uuid, generator_name=generator_name)
-    output.generator_info = [generator_info for _ in range(len(output.trajectories))]
+    output.generator_info = [TrajectoryGeneratorInfo(
+        generator_id=generator_uuid, generator_name=generator_name)]
 
     return output
 
