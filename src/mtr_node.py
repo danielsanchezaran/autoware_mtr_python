@@ -37,7 +37,7 @@ from utils.load import LoadIntentionPoint
 from autoware_mtr.conversion.ego import from_odometry
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
 from autoware_mtr.conversion.misc import timestamp2ms
-from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectory, to_trajectories
+from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectories
 from autoware_mtr.datatype import AgentLabel
 from autoware_mtr.geometry import rotate_along_z
 from autoware_mtr.dataclass.history import AgentHistory
@@ -199,8 +199,6 @@ class MTRNode(Node):
         self._generator_uuid: RosUUID = _str_to_uuid_msg("autoware_mtr_py_")
         # publisher
         self._publisher = self.create_publisher(PredictedObjects, "~/output/objects", qos_profile)
-        self._ego_traj_publisher = self.create_publisher(
-            Trajectory, "~/output/trajectory", qos_profile)
         self._ego_trajectories_publisher = self.create_publisher(
             Trajectories, "~/output/trajectories", qos_profile)
 
@@ -250,13 +248,6 @@ class MTRNode(Node):
 
         # post-process
         pred_scores, pred_trajs = self._postprocess(pred_scores, pred_trajs)
-        ego_traj = to_trajectory(header=msg.header,
-                                 infos=[info],
-                                 pred_scores=pred_scores,
-                                 pred_trajs=pred_trajs,
-                                 score_threshold=self._score_threshold,)[0]
-        self._ego_traj_publisher.publish(ego_traj)
-
         ego_multiple_trajs = to_trajectories(header=msg.header,
                                              infos=[info],
                                              pred_scores=pred_scores,

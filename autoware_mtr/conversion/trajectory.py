@@ -93,35 +93,6 @@ def to_trajectories(header: Header,
     return output
 
 
-def to_trajectory(
-    header: Header,
-    infos: Sequence[OriginalInfo],
-    pred_scores: NDArray,
-    pred_trajs: NDArray,
-    score_threshold: float,
-) -> List[Trajectory]:
-    """Convert predictions to Trajectory msg.
-
-    Args:
-        header (Header): Header of the input message.
-        infos (Sequence[OriginalInfo]): List of original message information.
-        pred_scores (NDArray): Predicted score tensor in the shape of (N, M).
-        pred_trajs (NDArray): Predicted trajectory tensor in the shape of (N, M, T, 4).
-        score_threshold (float): Threshold value of score.
-
-    Returns:
-        Trajectory: Instanced msg.
-    """
-    output = []
-    # convert each object
-    for info, cur_scores, cur_trajs in zip(infos, pred_scores, pred_trajs, strict=True):
-        target_trajs = _to_trajectories(info, cur_scores, cur_trajs, score_threshold)
-        best_traj = target_trajs[np.argmax(cur_scores)]
-        best_traj.header = header
-        output.append(best_traj)
-    return output
-
-
 def _to_new_trajectories(header: Header,
                          info: OriginalInfo,
                          pred_scores: NDArray,
@@ -147,39 +118,10 @@ def _to_new_trajectories(header: Header,
     for cur_score, cur_traj in zip(pred_scores, pred_trajs, strict=True):
         if cur_score < score_threshold:
             continue
-        cur_mode_traj: NewTrajectory = _to_traj(info, cur_traj, get_new_trajectory=True)
+        cur_mode_traj: NewTrajectory = _to_traj(info, cur_traj, cur_score, get_new_trajectory=True)
         cur_mode_traj.header = header
         cur_mode_traj.generator_id = generator_uuid
         output.append(cur_mode_traj)
-
-    return output
-
-
-def _to_trajectories(
-    info: OriginalInfo,
-    pred_scores: NDArray,
-    pred_trajs: NDArray,
-    score_threshold: float,
-) -> List[Trajectory]:
-    """Convert prediction of a single object to Trajectory msg.
-
-    Args:
-        info (ObjectInfo): Object original info.
-        pred_scores (NDArray): Predicted score in the shape of (M,).
-        pred_trajs (NDArray): Predicted trajectory in the shape of (M, T, 4).
-        score_threshold (float): Threshold value of score.
-
-    Returns:
-        Trajectory: Instanced msg.
-    """
-    output = []
-
-    # # convert each mode
-    for cur_score, cur_traj in zip(pred_scores, pred_trajs, strict=True):
-        if cur_score < score_threshold:
-            continue
-        cur_mode_path = _to_traj(info, cur_traj)
-        output.append(cur_mode_path)
 
     return output
 
@@ -201,6 +143,7 @@ def _yaw_to_quaternion(yaw: float) -> Quaternion:
 def _to_traj(
     info: OriginalInfo,
     pred_traj: NDArray,
+    pred_score: float = 0.0,
     get_new_trajectory: bool = False,
 ) -> Trajectory:
     """Convert prediction of a single mode to Trajectory msg.
@@ -213,6 +156,8 @@ def _to_traj(
         Trajectory: Instanced msg.
     """
     output = NewTrajectory() if get_new_trajectory else Trajectory()
+    if get_new_trajectory:
+        output.score = float(pred_score)
     time_step = 0.1  # TODO(ktro2828): use specific value?
     for i, mode_point in enumerate(pred_traj):  # (x, y, vx, vy)
         x, y, _, _, _, vx, vy = mode_point
