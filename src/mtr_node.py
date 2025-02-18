@@ -292,8 +292,9 @@ class MTRNode(Node):
 
         pred_scores_future, pred_trajs_future = None, None
         if self.propagate_future_states:
+            steer_index = self.search_steering_change_index(self._prev_trajectory)
             ego_history_from_traj, future_ego_state, future_ego_info = self.trajectory_as_ground_truth(
-                self._prev_trajectory, self._last_trajectories, self.future_state_propagation_sec, 0.1)
+                self._prev_trajectory, self._last_trajectories, int(steer_index * 0.1), 0.1)
             if ego_history_from_traj is not None:
                 pre_processed_input_future = self._create_pre_processed_input(
                     future_ego_state, ego_history_from_traj)
@@ -504,9 +505,9 @@ class MTRNode(Node):
         history = AgentHistory(max_length=self._num_timestamps)
         start_index = int(time_offset / dt)
         end_index = int(start_index + 1 + 1 / dt)
-        if end_index > len(closest_trajectory.points):
-            end_index = len(closest_trajectory.points)
-            start_index = int(end_index - (1 + 1 / dt))
+        if end_index >= len(closest_trajectory.points):
+            end_index = len(closest_trajectory.points) - 1
+            start_index = int(end_index - (1 / dt))
 
         for i in range(start_index, end_index):
             point = closest_trajectory.points[i]
@@ -528,6 +529,33 @@ class MTRNode(Node):
             return None, None, None
         ego_state, info = self.extract_ego_state_from_trajectory(closest_traj, end_index)
         return ego_history_from_traj, ego_state, info
+
+    def search_steering_change_index(self, trajectory: Trajectory, threshold: float = np.pi / 12.0):
+        if trajectory is None:
+            return 0
+        from tf_transformations import euler_from_quaternion
+
+        def get_yaw(quaternion):
+            x = quaternion.x
+            y = quaternion.y
+            z = quaternion.z
+            w = quaternion.w
+            return euler_from_quaternion([x, y, z, w])[2]
+
+        import math
+
+        def angle_difference(angle1, angle2):
+            """Returns the shortest difference between two angles in radians."""
+            diff = (angle1 - angle2 + math.pi) % (2 * math.pi) - math.pi
+            return diff
+
+        first_point_yaw = get_yaw(trajectory.points[0].pose.orientation)
+        for i, p in enumerate(trajectory.points):
+            yaw = get_yaw(p.pose.orientation)
+            diff = abs(angle_difference(yaw, first_point_yaw))
+            if (diff > threshold):
+                return i
+        return 50
 
 
 def main(args=None) -> None:
