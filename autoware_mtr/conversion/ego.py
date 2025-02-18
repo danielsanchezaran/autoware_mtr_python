@@ -2,6 +2,8 @@ from autoware_mtr.dataclass.agent import AgentState
 from autoware_mtr.dataclass.agent import OriginalInfo
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
+from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
+from std_msgs.msg import Header
 import numpy as np
 from numpy.typing import NDArray
 
@@ -9,6 +11,34 @@ from .misc import timestamp2ms
 from .misc import yaw_from_quaternion
 
 __all__ = ("from_odometry", "convert_transform_stamped")
+
+
+def from_trajectory_point(point: TrajectoryPoint, uuid: str, header: Header, label_id: int, size: NDArray) -> tuple[AgentState, OriginalInfo]:
+    timestamp = timestamp2ms(header=header)
+    pose = point.pose
+    xyz = np.array((pose.position.x, pose.position.y, pose.position.z))
+
+    yaw = yaw_from_quaternion(pose.orientation)
+
+    twist_x = point.longitudinal_velocity_mps
+    twist_y = point.lateral_velocity_mps
+
+    vxy = np.array((twist_x, twist_y))
+
+    state = AgentState(
+        uuid=uuid,
+        timestamp=timestamp,
+        label_id=label_id,
+        xyz=xyz,
+        size=size,
+        yaw=yaw,
+        vxy=vxy,
+        is_valid=True,
+    )
+
+    info = OriginalInfo.from_point(point, uuid, size)
+
+    return state, info
 
 
 def from_odometry(

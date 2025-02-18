@@ -8,6 +8,7 @@ from autoware_perception_msgs.msg import ObjectClassification
 from autoware_perception_msgs.msg import Shape
 from autoware_perception_msgs.msg import TrackedObject
 from autoware_perception_msgs.msg import TrackedObjectKinematics
+from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
 from geometry_msgs.msg import Vector3
 from nav_msgs.msg import Odometry
 import numpy as np
@@ -34,6 +35,32 @@ class OriginalInfo:
             shape=msg.shape,
             existence_probability=msg.existence_probability,
             kinematics=msg.kinematics,
+        )
+
+    @classmethod
+    def from_point(cls, point: TrajectoryPoint, uuid: str | RosUUID,
+                   dimensions: tuple[float, float, float] | Vector3,
+                   ) -> OriginalInfo:
+        if not isinstance(uuid, RosUUID):
+            uuid = _str_to_uuid_msg(uuid)
+
+        if not isinstance(dimensions, Vector3):
+            dimensions = Vector3(x=dimensions[0], y=dimensions[1], z=dimensions[2])
+        classification = ObjectClassification()
+        classification.label = ObjectClassification.CAR
+        classification.probability = 1.0
+
+        kinematics = TrackedObjectKinematics()
+        kinematics.pose_with_covariance.pose = point.pose
+        kinematics.twist_with_covariance.twist.linear.x = point.longitudinal_velocity_mps
+        kinematics.twist_with_covariance.twist.linear.y = point.lateral_velocity_mps
+
+        return cls(
+            uuid=uuid,
+            classification=[classification],
+            shape=Shape(type=0, dimensions=dimensions),
+            existence_probability=1.0,
+            kinematics=kinematics,
         )
 
     @classmethod

@@ -6,6 +6,7 @@ from collections import deque
 import rclpy
 import rclpy.duration
 import rclpy.parameter
+from rclpy.time import Time
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy
@@ -75,6 +76,9 @@ class MTRNode(Node):
 
         self._tracked_objects_sub = self.create_subscription(
             TrackedObjects, "~/input/tracked_objects", self._tracked_objects_callback, qos_profile_2)
+
+        self._prev_trajectory_sub = self.create_subscription(
+            Trajectory, "/planning/scenario_planning/trajectory", self._previous_trajectory_callback, qos_profile_2)
 
         qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -154,8 +158,15 @@ class MTRNode(Node):
         self.ego_dimensions = (self.declare_parameter(
             "ego_dimensions", descriptor=descriptor).get_parameter_value().double_array_value)
 
+        self.propagate_future_states = (self.declare_parameter(
+            "propagate_future_states", descriptor=descriptor).get_parameter_value().bool_value)
+
+        self.future_state_propagation_sec = (self.declare_parameter(
+            "future_state_propagation_sec", descriptor=descriptor).get_parameter_value().double_value)
+
         self._num_timestamps = num_timestamp
         self._history = AgentHistory(max_length=num_timestamp)
+        self._future_propagated_history = AgentHistory(max_length=num_timestamp)
         self._awml_static_map: AWMLStaticMap = convert_lanelet(lanelet_file)
 
         intention_point_loader: LoadIntentionPoint = LoadIntentionPoint(
@@ -175,6 +186,7 @@ class MTRNode(Node):
         )
         self._batch_polylines = None
         self._batch_polylines_mask = None
+        self._prev_trajectory: Trajectory | None = None
         self._label_ids = [AgentLabel.from_str(label).value for label in labels]
 
         cfg = Config.from_file(model_config_path)
@@ -202,6 +214,9 @@ class MTRNode(Node):
         self._ego_trajectories_publisher = self.create_publisher(
             Trajectories, "~/output/trajectories", qos_profile)
 
+    def _previous_trajectory_callback(self, msg: Trajectory) -> None:
+        self._prev_trajectory = msg
+
     def _tracked_objects_callback(self, msg: TrackedObjects) -> None:
         timestamp = timestamp2ms(msg.header)
         states, infos = from_tracked_objects(msg)
@@ -224,6 +239,8 @@ class MTRNode(Node):
         if self.count < self._num_timestamps:
             self.count = self.count + 1
             return
+
+        self.trajectory_as_ground_truth(self._prev_trajectory, None)
         pre_processed_input = {}
         # pre-process
         past_embed, polyline_info, ego_last_xyz, trajectory_mask = self._preprocess(current_ego)
@@ -404,6 +421,29 @@ class MTRNode(Node):
         embedded_inputs, last_xyz, trajectory_mask = self.get_embedded_inputs(relative_histories, [
                                                                               0])
         return embedded_inputs, polyline_info, last_xyz, trajectory_mask
+
+    def trajectory_as_ground_truth(self, future_trajectory: Trajectory, base_target_history: deque[AgentState]) -> deque[AgentState]:
+        # Extract future states from trajectory and create a new history
+        # self._future_propagated_history
+        if future_trajectory is None:
+            return
+
+        # Convert the timestamps to rclpy Time objects
+        current_time = Time.from_msg(self._clock.now().to_msg())
+        future_time = Time.from_msg(future_trajectory._header._stamp)
+
+        # Subtract the two Time objects to get a Duration
+        time_difference = (current_time - future_time).nanoseconds
+        time_start: float = time_difference
+
+        print("time diff ", time_difference)
+        print("Prev trajectory")
+        for i, point in enumerate(future_trajectory._points):
+            print("i, point.time_from_start", i, point.time_from_start)
+
+        # for trajectory_point in future_trajectory:
+        #     state : AgentState
+        #     state
 
 
 def main(args=None) -> None:
