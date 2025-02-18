@@ -2,6 +2,7 @@ import hashlib
 import torch
 import numpy as np
 from collections import deque
+from copy import deepcopy
 
 import rclpy
 import rclpy.duration
@@ -12,6 +13,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.parameter import Parameter
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from nav_msgs.msg import Odometry
@@ -23,6 +26,7 @@ from utils.polyline import TargetCentricPolyline
 from autoware_perception_msgs.msg import PredictedObjects
 from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
 from autoware_new_planning_msgs.msg import Trajectories
+from autoware_new_planning_msgs.msg import Trajectory as NewTrajectory
 from unique_identifier_msgs.msg import UUID as RosUUID
 from autoware_mtr.dataclass.agent import _str_to_uuid_msg
 
@@ -35,14 +39,14 @@ from awml_pred.models import build_model
 from awml_pred.deploy.apis.torch2onnx import _load_inputs
 from utils.lanelet_converter import convert_lanelet
 from utils.load import LoadIntentionPoint
-from autoware_mtr.conversion.ego import from_odometry
+from autoware_mtr.conversion.ego import from_odometry, from_trajectory_point
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
 from autoware_mtr.conversion.misc import timestamp2ms
 from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectories
 from autoware_mtr.datatype import AgentLabel
 from autoware_mtr.geometry import rotate_along_z
 from autoware_mtr.dataclass.history import AgentHistory
-from autoware_mtr.dataclass.agent import AgentState
+from autoware_mtr.dataclass.agent import AgentState, AgentTrajectory
 from autoware_mtr.conversion.predicted_object import to_predicted_objects
 from typing import List
 
@@ -159,7 +163,10 @@ class MTRNode(Node):
             "ego_dimensions", descriptor=descriptor).get_parameter_value().double_array_value)
 
         self.propagate_future_states = (self.declare_parameter(
-            "propagate_future_states", descriptor=descriptor).get_parameter_value().bool_value)
+            "propagate_future_states", False, ParameterDescriptor(
+                description='Propagate future states',
+                type=Parameter.Type.BOOL.value
+            )).get_parameter_value().bool_value)
 
         self.future_state_propagation_sec = (self.declare_parameter(
             "future_state_propagation_sec", descriptor=descriptor).get_parameter_value().double_value)
@@ -187,6 +194,8 @@ class MTRNode(Node):
         self._batch_polylines = None
         self._batch_polylines_mask = None
         self._prev_trajectory: Trajectory | None = None
+        self._last_ego: AgentState | None = None
+        self._last_trajectories = None
         self._label_ids = [AgentLabel.from_str(label).value for label in labels]
 
         cfg = Config.from_file(model_config_path)
@@ -194,6 +203,7 @@ class MTRNode(Node):
 
         # Ego info
         self._ego_uuid = hashlib.shake_256("EGO".encode()).hexdigest(8)
+        self._ego_uuid_future = hashlib.shake_256("EGO_FUTURE".encode()).hexdigest(8)
 
         # Load Model
         self.model = build_model(cfg.model)
@@ -213,6 +223,39 @@ class MTRNode(Node):
         self._publisher = self.create_publisher(PredictedObjects, "~/output/objects", qos_profile)
         self._ego_trajectories_publisher = self.create_publisher(
             Trajectories, "~/output/trajectories", qos_profile)
+
+        # Add a callback for parameter changes
+        self.add_on_set_parameters_callback(self._parameter_callback)
+
+    def _parameter_callback(self, params):
+        for param in params:
+            if param.name == "propagate_future_states":
+                self.propagate_future_states = param.value
+
+        # Return success
+        return rclpy.parameter.ParameterValue(
+            successful=True
+        )
+
+    def _create_pre_processed_input(self, current_ego: AgentState, history: AgentHistory):
+        past_embed, polyline_info, ego_last_xyz, trajectory_mask = self._preprocess(
+            current_ego, history)
+        num_target, num_agent, num_time, num_feat = past_embed.shape
+        pre_processed_input = {}
+        pre_processed_input["obj_trajs"] = torch.Tensor(past_embed).cuda()
+        pre_processed_input["obj_trajs_mask"] = trajectory_mask
+        pre_processed_input["map_polylines"] = torch.Tensor(polyline_info["polylines"]).cuda()
+        pre_processed_input["map_polylines_mask"] = torch.Tensor(
+            polyline_info["polylines_mask"]).cuda()
+        pre_processed_input["map_polylines_center"] = torch.Tensor(
+            polyline_info["polyline_centers"]).cuda()
+        pre_processed_input["obj_trajs_last_pos"] = torch.Tensor(
+            ego_last_xyz.reshape((num_target, num_agent, 3))).cuda()
+        pre_processed_input["intention_points"] = torch.Tensor(
+            self._intention_points["intention_points"]).cuda()
+        pre_processed_input["track_index_to_predict"] = torch.arange(
+            0, num_target, dtype=torch.int32).cuda()
+        return pre_processed_input
 
     def _previous_trajectory_callback(self, msg: Trajectory) -> None:
         self._prev_trajectory = msg
@@ -240,31 +283,33 @@ class MTRNode(Node):
             self.count = self.count + 1
             return
 
-        self.trajectory_as_ground_truth(self._prev_trajectory, None)
-        pre_processed_input = {}
         # pre-process
-        past_embed, polyline_info, ego_last_xyz, trajectory_mask = self._preprocess(current_ego)
-        num_target, num_agent, num_time, num_feat = past_embed.shape
-        pre_processed_input["obj_trajs"] = torch.Tensor(past_embed).cuda()
-        pre_processed_input["obj_trajs_mask"] = trajectory_mask
-        pre_processed_input["map_polylines"] = torch.Tensor(polyline_info["polylines"]).cuda()
-        pre_processed_input["map_polylines_mask"] = torch.Tensor(
-            polyline_info["polylines_mask"]).cuda()
-        pre_processed_input["map_polylines_center"] = torch.Tensor(
-            polyline_info["polyline_centers"]).cuda()
-        pre_processed_input["obj_trajs_last_pos"] = torch.Tensor(
-            ego_last_xyz.reshape((num_target, num_agent, 3))).cuda()
-        pre_processed_input["intention_points"] = torch.Tensor(
-            self._intention_points["intention_points"]).cuda()
-        pre_processed_input["track_index_to_predict"] = torch.arange(
-            0, num_target, dtype=torch.int32).cuda()
+        pre_processed_input = self._create_pre_processed_input(current_ego, self._history)
 
         # inference
         with torch.no_grad():
             pred_scores, pred_trajs = self.model(**pre_processed_input)
 
+        pred_scores_future, pred_trajs_future = None, None
+        if self.propagate_future_states:
+            ego_history_from_traj, future_ego_state, future_ego_info = self.trajectory_as_ground_truth(
+                self._prev_trajectory, self._last_trajectories, self.future_state_propagation_sec, 0.1)
+            if ego_history_from_traj is not None:
+                pre_processed_input_future = self._create_pre_processed_input(
+                    future_ego_state, ego_history_from_traj)
+                with torch.no_grad():
+                    pred_scores_future, pred_trajs_future_propagation = self.model(
+                        **pre_processed_input_future)
+                future_agent_trajectory, _ = ego_history_from_traj.target_as_trajectory(
+                    self._ego_uuid_future, latest=True)
+                pred_scores_future, pred_trajs_future = self._postprocess(
+                    pred_scores_future, pred_trajs_future_propagation, future_agent_trajectory)
+
         # post-process
-        pred_scores, pred_trajs = self._postprocess(pred_scores, pred_trajs)
+        current_agent_trajectory, _ = self._history.target_as_trajectory(
+            self._ego_uuid, latest=True)
+        pred_scores, pred_trajs = self._postprocess(
+            pred_scores, pred_trajs, current_agent_trajectory)
         ego_multiple_trajs = to_trajectories(header=msg.header,
                                              infos=[info],
                                              pred_scores=pred_scores,
@@ -280,12 +325,28 @@ class MTRNode(Node):
             pred_trajs=pred_trajs,
             score_threshold=self._score_threshold,
         )
+
+        if pred_scores_future is not None and pred_trajs_future is not None and self.propagate_future_states:
+            pred_objs_future = to_predicted_objects(
+                header=msg.header,
+                infos=[future_ego_info],
+                pred_scores=pred_scores_future,
+                pred_trajs=pred_trajs_future,
+                score_threshold=self._score_threshold,
+            )
+            for object in pred_objs_future.objects:
+                pred_objs.objects.append(object)
+
         self._publisher.publish(pred_objs)
+
+        self._last_ego = current_ego
+        self._last_trajectories = ego_multiple_trajs
 
     def _postprocess(
         self,
         pred_scores: NDArray | torch.Tensor,
         pred_trajs: NDArray | torch.Tensor,
+        current_agent: AgentTrajectory,
     ) -> tuple[NDArray, NDArray]:
         """Run postprocess.
 
@@ -308,7 +369,6 @@ class MTRNode(Node):
         assert num_feat == 7, f"Expected predicted feature is (X, Y, Xmean, Ymean, Variance, Vx, Vy), but got {num_feat}"
 
         # transform from agent centric coords to world coords
-        current_agent, _ = self._history.target_as_trajectory(self._ego_uuid, latest=True)
 
         # first 2 elements are xy then we use the negative ego rotation. reshape, I dont know
         # each trajectory is in  the ref frame of its own agent. For ego we might use TF ?
@@ -396,6 +456,7 @@ class MTRNode(Node):
     def _preprocess(
         self,
         current_ego: AgentState,
+        history: AgentHistory
     ):
         """Run preprocess.
 
@@ -415,35 +476,58 @@ class MTRNode(Node):
                 static_map=self._awml_static_map, target_state=current_ego, num_target=1, batch_polylines=self._batch_polylines, batch_polylines_mask=self._batch_polylines_mask)
 
         sorted_histories = order_from_closest_to_furthest(
-            current_ego, self._history.histories.values())
+            current_ego, history.histories.values())
         relative_histories = get_relative_histories(
             [current_ego], sorted_histories)
         embedded_inputs, last_xyz, trajectory_mask = self.get_embedded_inputs(relative_histories, [
                                                                               0])
         return embedded_inputs, polyline_info, last_xyz, trajectory_mask
 
-    def trajectory_as_ground_truth(self, future_trajectory: Trajectory, base_target_history: deque[AgentState]) -> deque[AgentState]:
-        # Extract future states from trajectory and create a new history
-        # self._future_propagated_history
-        if future_trajectory is None:
-            return
+    def get_closest_trajectory(self, previous_best_trajectory: Trajectory, previous_mtr_trajectories: Trajectories) -> NewTrajectory:
+        closest_trajectory = None
+        shortest_distance = 1e9
+        previous_trajectory_last_point: TrajectoryPoint = previous_best_trajectory.points[-1]
+        for trajectory in previous_mtr_trajectories.trajectories:
+            last_point: TrajectoryPoint = trajectory.points[-1]
+            distance = (last_point.pose.position.x - previous_trajectory_last_point.pose.position.x) ** 2 + \
+                (last_point.pose.position.y - previous_trajectory_last_point.pose.position.y) ** 2
+            if distance < shortest_distance:
+                shortest_distance = distance
+                closest_trajectory = deepcopy(trajectory)
+        return closest_trajectory
 
-        # Convert the timestamps to rclpy Time objects
-        current_time = Time.from_msg(self._clock.now().to_msg())
-        future_time = Time.from_msg(future_trajectory._header._stamp)
+    def get_ego_history_from_closest_trajectory(self, previous_best_trajectory: Trajectory, previous_mtr_trajectories: Trajectories, time_offset: float, dt: float = 0.1) -> deque[AgentState]:
+        if (previous_best_trajectory is None or previous_mtr_trajectories is None):
+            return None, None, None
+        closest_trajectory = self.get_closest_trajectory(
+            previous_best_trajectory, previous_mtr_trajectories)
+        history = AgentHistory(max_length=self._num_timestamps)
+        start_index = int(time_offset / dt)
+        end_index = int(start_index + 1 + 1 / dt)
+        if end_index > len(closest_trajectory.points):
+            end_index = len(closest_trajectory.points)
+            start_index = int(end_index - (1 + 1 / dt))
 
-        # Subtract the two Time objects to get a Duration
-        time_difference = (current_time - future_time).nanoseconds
-        time_start: float = time_difference
+        for i in range(start_index, end_index):
+            point = closest_trajectory.points[i]
+            state, info = from_trajectory_point(point=point, uuid=self._ego_uuid_future, header=previous_best_trajectory.header, label_id=AgentLabel.VEHICLE,
+                                                size=self.ego_dimensions)
+            history.update_state(state, info)
+        return history, closest_trajectory, end_index
 
-        print("time diff ", time_difference)
-        print("Prev trajectory")
-        for i, point in enumerate(future_trajectory._points):
-            print("i, point.time_from_start", i, point.time_from_start)
+    def extract_ego_state_from_trajectory(self, trajectory: NewTrajectory, idx: int):
+        curr_point = trajectory.points[idx]
+        ego_state, info = from_trajectory_point(point=curr_point, uuid=self._ego_uuid_future, header=trajectory.header, label_id=AgentLabel.VEHICLE,
+                                                size=self.ego_dimensions)
+        return ego_state, info
 
-        # for trajectory_point in future_trajectory:
-        #     state : AgentState
-        #     state
+    def trajectory_as_ground_truth(self, previous_best_trajectory: Trajectory, previous_mtr_trajectories: Trajectories, time_offset: float, dt: float = 0.1) -> deque[AgentState]:
+        ego_history_from_traj, closest_traj, end_index = self.get_ego_history_from_closest_trajectory(
+            previous_best_trajectory, previous_mtr_trajectories, time_offset, dt)
+        if closest_traj is None:
+            return None, None, None
+        ego_state, info = self.extract_ego_state_from_trajectory(closest_traj, end_index)
+        return ego_history_from_traj, ego_state, info
 
 
 def main(args=None) -> None:
