@@ -25,6 +25,8 @@ import numpy as np
 from autoware_mtr.dataclass.agent import AgentState
 from awml_pred.ops import rotate_along_z
 from tf_transformations import quaternion_from_euler
+from scipy.interpolate import CubicSpline
+from scipy.signal import savgol_filter
 
 
 def order_from_closest_to_furthest(reference_state: AgentState, histories: List[deque[AgentState]]) -> List[deque[AgentState]]:
@@ -118,7 +120,8 @@ def _to_new_trajectories(header: Header,
     for cur_score, cur_traj in zip(pred_scores, pred_trajs, strict=True):
         if cur_score < score_threshold:
             continue
-        cur_mode_traj: NewTrajectory = _to_traj(info, cur_traj, cur_score, get_new_trajectory=True)
+        cur_mode_traj: NewTrajectory = _to_traj_interp(
+            info, cur_traj, cur_score, get_new_trajectory=True)
         cur_mode_traj.header = header
         cur_mode_traj.generator_id = generator_uuid
         output.append(cur_mode_traj)
@@ -140,6 +143,69 @@ def _yaw_to_quaternion(yaw: float) -> Quaternion:
     return q
 
 
+def _to_traj_interp(
+    info: OriginalInfo,
+    pred_traj: NDArray,
+    pred_score: float = 0.0,
+    get_new_trajectory: bool = False,
+) -> Trajectory:
+    """Convert prediction of a single mode to Trajectory msg, with smoothing.
+
+    Args:
+        info (OriginalInfo): Object original info.
+        pred_traj (NDArray): Predicted waypoints in the shape of (T, 4).
+        pred_score (float): Predicted score.
+    Returns:
+        Trajectory: Smoothed trajectory message.
+    """
+    output = NewTrajectory() if get_new_trajectory else Trajectory()
+    if get_new_trajectory:
+        output.score = float(pred_score)
+
+    time_step = 0.1
+    T = len(pred_traj)
+
+    # Extract raw x, y, vx, vy
+    t = np.linspace(0, (T - 1) * time_step, T)
+    x_raw, y_raw, _, _, _, vx_raw, vy_raw = pred_traj.T  # Extract columns
+
+    # Apply cubic spline interpolation
+    x_spline = CubicSpline(t, x_raw)
+    y_spline = CubicSpline(t, y_raw)
+
+    # Generate smoothed positions
+    t_fine = np.linspace(0, (T - 1) * time_step, T)
+    x_smooth = x_spline(t_fine)
+    y_smooth = y_spline(t_fine)
+
+    # Compute smoothed yaw using dx/dt, dy/dt
+    dx = np.gradient(x_smooth, t_fine)
+    dy = np.gradient(y_smooth, t_fine)
+    yaw_smooth = np.arctan2(dy, dx)
+
+    # Apply Savitzky-Golay filter for extra noise reduction (optional)
+    yaw_smooth = savgol_filter(yaw_smooth, window_length=5, polyorder=2)
+
+    for i in range(T):
+        pose = Pose()
+        pose.position.x = float(x_smooth[i])
+        pose.position.y = float(y_smooth[i])
+        pose.position.z = info.kinematics.pose_with_covariance.pose.position.z
+
+        pose.orientation = _yaw_to_quaternion(yaw_smooth[i])
+
+        trajectory_point = TrajectoryPoint()
+        trajectory_point.pose = pose
+        trajectory_point.longitudinal_velocity_mps = float(vx_raw[i])
+        trajectory_point.lateral_velocity_mps = float(vy_raw[i])
+        trajectory_point.acceleration_mps2 = 0.0
+        trajectory_point.time_from_start = Duration(seconds=time_step * i).to_msg()
+
+        output.points.append(trajectory_point)
+
+    return output
+
+
 def _to_traj(
     info: OriginalInfo,
     pred_traj: NDArray,
@@ -158,7 +224,7 @@ def _to_traj(
     output = NewTrajectory() if get_new_trajectory else Trajectory()
     if get_new_trajectory:
         output.score = float(pred_score)
-    time_step = 0.1  # TODO(ktro2828): use specific value?
+    time_step = 0.1
     for i, mode_point in enumerate(pred_traj):  # (x, y, vx, vy)
         x, y, _, _, _, vx, vy = mode_point
         pose = Pose()

@@ -1,11 +1,11 @@
 /**:
   ros__parameters:
     num_timestamp: 11 # the number of past frames
-    timestamp_threshold: 1000.0 # [ms]
+    timestamp_threshold: 10000.0 # [ms]
     score_threshold: 0.0 # threshold of predicted score
     labels: ["VEHICLE"] # only ego vehicle is considered
     ego_dimensions: [4.0,2.0,1.0] # [length, width, height]
-    propagate_future_states: false
+    propagate_future_states: true
     future_state_propagation_sec: 1.0
 
     # labels: ["VEHICLE", "PEDESTRIAN", "MOTORCYCLIST", "CYCLIST", "BUS"]

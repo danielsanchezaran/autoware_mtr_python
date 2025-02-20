@@ -11,7 +11,7 @@
   <arg name="output/trajectories" default="mtr/trajectories"/>
 
 
-  <arg name="lanelet_file" default="$(find-pkg-share autoware_mtr_python)/data/bs.lanelet2_map.osm"/>
+  <arg name="lanelet_file" default="$(find-pkg-share autoware_mtr_python)/data/odaiba.lanelet2_map.osm"/>
   <arg name="intention_point_file" default="$(find-pkg-share autoware_mtr_python)/data/cluster64_dict.pkl"/>
   <arg name="build_only" default="false"/>
 
