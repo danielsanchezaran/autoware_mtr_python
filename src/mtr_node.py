@@ -3,9 +3,13 @@ import torch
 import numpy as np
 from collections import deque
 from copy import deepcopy
+import numpy as np
+from scipy.interpolate import interp1d
+from typing import List
 
 import rclpy
-import rclpy.duration
+from rclpy.duration import Duration
+
 import rclpy.parameter
 from rclpy.time import Time
 from rclpy.executors import MultiThreadedExecutor
@@ -41,8 +45,8 @@ from utils.lanelet_converter import convert_lanelet
 from utils.load import LoadIntentionPoint
 from autoware_mtr.conversion.ego import from_odometry, from_trajectory_point
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
-from autoware_mtr.conversion.misc import timestamp2ms
-from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectories
+from autoware_mtr.conversion.misc import timestamp2ms, yaw_from_quaternion
+from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectories, _yaw_to_quaternion
 from autoware_mtr.datatype import AgentLabel
 from autoware_mtr.geometry import rotate_along_z
 from autoware_mtr.dataclass.history import AgentHistory
@@ -291,10 +295,9 @@ class MTRNode(Node):
             pred_scores, pred_trajs = self.model(**pre_processed_input)
 
         pred_scores_future, pred_trajs_future = None, None
-        if self.propagate_future_states:
-            steer_index = self.search_steering_change_index(self._prev_trajectory)
-            ego_history_from_traj, future_ego_state, future_ego_info = self.trajectory_as_ground_truth(
-                self._prev_trajectory, self._last_trajectories, int(steer_index * 0.1), 0.1)
+        if self.propagate_future_states and self._prev_trajectory is not None:
+            ego_history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
+                self._prev_trajectory, 1.1)
             if ego_history_from_traj is not None:
                 pre_processed_input_future = self._create_pre_processed_input(
                     future_ego_state, ego_history_from_traj)
@@ -484,78 +487,130 @@ class MTRNode(Node):
                                                                               0])
         return embedded_inputs, polyline_info, last_xyz, trajectory_mask
 
-    def get_closest_trajectory(self, previous_best_trajectory: Trajectory, previous_mtr_trajectories: Trajectories) -> NewTrajectory:
-        closest_trajectory = None
-        shortest_distance = 1e9
-        previous_trajectory_last_point: TrajectoryPoint = previous_best_trajectory.points[-1]
-        for trajectory in previous_mtr_trajectories.trajectories:
-            last_point: TrajectoryPoint = trajectory.points[-1]
-            distance = (last_point.pose.position.x - previous_trajectory_last_point.pose.position.x) ** 2 + \
-                (last_point.pose.position.y - previous_trajectory_last_point.pose.position.y) ** 2
-            if distance < shortest_distance:
-                shortest_distance = distance
-                closest_trajectory = deepcopy(trajectory)
-        return closest_trajectory
+    def interpolate_trajectory(self, original_traj: Trajectory, start_time: float) -> Trajectory:
+        """
+        Interpolates a segment of the given trajectory from start_time, generating points at 0.1s intervals for 1 second.
 
-    def get_ego_history_from_closest_trajectory(self, previous_best_trajectory: Trajectory, previous_mtr_trajectories: Trajectories, time_offset: float, dt: float = 0.1) -> deque[AgentState]:
-        if (previous_best_trajectory is None or previous_mtr_trajectories is None):
-            return None, None, None
-        closest_trajectory = self.get_closest_trajectory(
-            previous_best_trajectory, previous_mtr_trajectories)
+        Args:
+            original_traj (Trajectory): The original trajectory to interpolate.
+            start_time (float): The time to start interpolation from.
+
+        Returns:
+            Trajectory: A new trajectory with interpolated points.
+        """
+        if not original_traj.points:
+            return Trajectory()
+
+        # Extract time, positions, velocities, and yaw
+        times = np.array([p.time_from_start.sec + p.time_from_start.nanosec *
+                         1e-9 for p in original_traj.points])
+        x = np.array([p.pose.position.x for p in original_traj.points])
+        y = np.array([p.pose.position.y for p in original_traj.points])
+        vx = np.array([p.longitudinal_velocity_mps for p in original_traj.points])
+        vy = np.array([p.lateral_velocity_mps for p in original_traj.points])
+        yaw = np.array([yaw_from_quaternion(p.pose.orientation)
+                       for p in original_traj.points])  # Extract yaw
+
+        # Find the closest index BEFORE start_time
+        idx_start = np.searchsorted(times, start_time) - 1
+        idx_start = max(0, idx_start)  # Ensure valid index
+
+        # Define new time samples every 0.1s for 1 second interval
+        t_interp = np.arange(start_time, start_time + 1.0 + 1e-6, 0.1)
+
+        # Ensure valid interpolation range
+        if times[-1] < t_interp[-1]:  # Not enough data to interpolate fully
+            raise ValueError("Not enough trajectory data to interpolate full 1-second interval.")
+
+        # Create interpolators
+        interp_x = interp1d(times, x, kind='linear', fill_value="extrapolate")
+        interp_y = interp1d(times, y, kind='linear', fill_value="extrapolate")
+        interp_vx = interp1d(times, vx, kind='linear', fill_value="extrapolate")
+        interp_vy = interp1d(times, vy, kind='linear', fill_value="extrapolate")
+        interp_yaw = interp1d(times, yaw, kind='linear',
+                              fill_value="extrapolate")  # Interpolate yaw!
+
+        # Generate interpolated values
+        x_interp = interp_x(t_interp)
+        y_interp = interp_y(t_interp)
+        vx_interp = interp_vx(t_interp)
+        vy_interp = interp_vy(t_interp)
+        yaw_interp = interp_yaw(t_interp)  # Get smoothed yaw directly
+
+        # Create a new Trajectory message
+        new_traj = Trajectory()
+
+        for i, t in enumerate(t_interp):
+            traj_point = TrajectoryPoint()
+            traj_point.pose.position.x = float(x_interp[i])
+            traj_point.pose.position.y = float(y_interp[i])
+            # Keep Z constant
+            traj_point.pose.position.z = original_traj.points[idx_start].pose.position.z
+            traj_point.longitudinal_velocity_mps = float(vx_interp[i])
+            traj_point.lateral_velocity_mps = float(vy_interp[i])
+            traj_point.time_from_start = Duration(
+                seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
+
+            # Use interpolated yaw instead of recomputing
+            traj_point.pose.orientation = _yaw_to_quaternion(yaw_interp[i])
+
+            new_traj.points.append(traj_point)
+
+        return new_traj
+
+    def get_ego_history_from_trajectory(self, previous_best_trajectory: Trajectory, time_from_end_of_trajectory: float):
+        if (previous_best_trajectory is None or len(previous_best_trajectory.points) == 0):
+            return None
+
+        last_point: TrajectoryPoint = previous_best_trajectory.points[-1]
+
+        time_start: float = last_point.time_from_start.sec + \
+            float(last_point.time_from_start.nanosec) * 1e-9 - time_from_end_of_trajectory
+        if time_start < 0:
+            return None
+
+        reduced_trajectory: NewTrajectory = self.interpolate_trajectory(
+            previous_best_trajectory, time_start)
         history = AgentHistory(max_length=self._num_timestamps)
-        start_index = int(time_offset / dt)
-        end_index = int(start_index + 1 + 1 / dt)
-        if end_index >= len(closest_trajectory.points):
-            end_index = len(closest_trajectory.points) - 1
-            start_index = int(end_index - (1 / dt))
-
+        start_index = 0
+        end_index = len(reduced_trajectory.points) - 1
         for i in range(start_index, end_index):
-            point = closest_trajectory.points[i]
+            point = reduced_trajectory.points[i]
             state, info = from_trajectory_point(point=point, uuid=self._ego_uuid_future, header=previous_best_trajectory.header, label_id=AgentLabel.VEHICLE,
                                                 size=self.ego_dimensions)
             history.update_state(state, info)
-        return history, closest_trajectory, end_index
+        return history, state, info
 
-    def extract_ego_state_from_trajectory(self, trajectory: NewTrajectory, idx: int):
-        curr_point = trajectory.points[idx]
-        ego_state, info = from_trajectory_point(point=curr_point, uuid=self._ego_uuid_future, header=trajectory.header, label_id=AgentLabel.VEHICLE,
-                                                size=self.ego_dimensions)
-        return ego_state, info
+    def find_nearest_index(self, trajectory: NewTrajectory, current_ego: AgentState):
+        x, y = current_ego.xy
+        min_distance = 100000.0
+        nearest_index = 0
 
-    def trajectory_as_ground_truth(self, previous_best_trajectory: Trajectory, previous_mtr_trajectories: Trajectories, time_offset: float, dt: float = 0.1) -> deque[AgentState]:
-        ego_history_from_traj, closest_traj, end_index = self.get_ego_history_from_closest_trajectory(
-            previous_best_trajectory, previous_mtr_trajectories, time_offset, dt)
-        if closest_traj is None:
-            return None, None, None
-        ego_state, info = self.extract_ego_state_from_trajectory(closest_traj, end_index)
-        return ego_history_from_traj, ego_state, info
+        for i, point in enumerate(trajectory.points):
+            dist = (point.pose.position.x - x) ** 2 + (point.pose.position.y - y)
+            if dist < min_distance:
+                min_distance = dist
+                nearest_index = i
+        return nearest_index
 
-    def search_steering_change_index(self, trajectory: Trajectory, threshold: float = np.pi / 12.0):
-        if trajectory is None:
-            return 0
-        from tf_transformations import euler_from_quaternion
+    def concatenate_trajectory(self,  trajectory: Trajectory, added_trajectory: NewTrajectory, ego_index: int):
 
-        def get_yaw(quaternion):
-            x = quaternion.x
-            y = quaternion.y
-            z = quaternion.z
-            w = quaternion.w
-            return euler_from_quaternion([x, y, z, w])[2]
+    def crop_trajectory(self, trajectory: Trajectory, ego_index: int):
+        if ego_index == 0:
+            return trajectory
 
-        import math
+        first_point = trajectory[ego_index]
+        time_offset = self.get_time_float(first_point.time_from_start)
+        output_trajectory = deepcopy(trajectory)
+        output_trajectory.points = output_trajectory.points[time_offset:]
+        for i, point in enumerate(output_trajectory.points):
+            t = self.get_time_float(point.time_from_start) - time_offset
+            output_trajectory.points[i].time_from_start = Duration(
+                seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
+        return output_trajectory
 
-        def angle_difference(angle1, angle2):
-            """Returns the shortest difference between two angles in radians."""
-            diff = (angle1 - angle2 + math.pi) % (2 * math.pi) - math.pi
-            return diff
-
-        first_point_yaw = get_yaw(trajectory.points[0].pose.orientation)
-        for i, p in enumerate(trajectory.points):
-            yaw = get_yaw(p.pose.orientation)
-            diff = abs(angle_difference(yaw, first_point_yaw))
-            if (diff > threshold):
-                return i
-        return 50
+    def get_time_float(self, duration: Duration) -> float:
+        return duration.sec + float(duration.nanosec) * 1e-9
 
 
 def main(args=None) -> None:
