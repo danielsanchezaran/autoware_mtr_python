@@ -593,7 +593,12 @@ class MTRNode(Node):
                 nearest_index = i
         return nearest_index
 
-    def concatenate_trajectory(self,  trajectory: Trajectory, added_trajectory: NewTrajectory, ego_index: int):
+    def to_new_trajectory(self, trajectory: Trajectory):
+        output = NewTrajectory()
+        output.points = trajectory.points
+        output.header = trajectory.header
+
+    def concatenate_trajectory(self,  trajectory: NewTrajectory, added_trajectory: NewTrajectory, ego_index: int):
         original_time_length = self.get_time_float(trajectory.points[-1])
         output_trajectory = self.crop_trajectory(trajectory=trajectory, ego_index=ego_index)
 
