@@ -120,7 +120,7 @@ def _to_new_trajectories(header: Header,
     for cur_score, cur_traj in zip(pred_scores, pred_trajs, strict=True):
         if cur_score < score_threshold:
             continue
-        cur_mode_traj: NewTrajectory = _to_traj_interp(
+        cur_mode_traj: NewTrajectory = _to_traj(
             info, cur_traj, cur_score, get_new_trajectory=True)
         cur_mode_traj.header = header
         cur_mode_traj.generator_id = generator_uuid

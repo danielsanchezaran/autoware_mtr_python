@@ -19,6 +19,7 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.parameter import Parameter
+from std_msgs.msg import Header
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from nav_msgs.msg import Odometry
@@ -221,6 +222,7 @@ class MTRNode(Node):
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._min_prediction_time = 7.0
 
         self._generator_uuid: RosUUID = _str_to_uuid_msg("autoware_mtr_py_")
         # publisher
@@ -294,8 +296,15 @@ class MTRNode(Node):
         with torch.no_grad():
             pred_scores, pred_trajs = self.model(**pre_processed_input)
 
-        pred_scores_future, pred_trajs_future = None, None
-        if self.propagate_future_states and self._prev_trajectory is not None:
+        # post-process
+        current_target_trajectory, _ = self._history.target_as_trajectory(
+            self._ego_uuid, latest=True)
+        pred_scores, pred_trajs = self._postprocess(
+            pred_scores, pred_trajs, current_target_trajectory)
+
+        pred_scores_future, pred_trajs_future, future_ego_state = None, None, None
+        ego_history_from_traj = None
+        if self.propagate_future_states and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
             ego_history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
                 self._prev_trajectory, 1.1)
             if ego_history_from_traj is not None:
@@ -309,21 +318,47 @@ class MTRNode(Node):
                 pred_scores_future, pred_trajs_future = self._postprocess(
                     pred_scores_future, pred_trajs_future_propagation, future_agent_trajectory)
 
-        # post-process
-        current_agent_trajectory, _ = self._history.target_as_trajectory(
-            self._ego_uuid, latest=True)
-        pred_scores, pred_trajs = self._postprocess(
-            pred_scores, pred_trajs, current_agent_trajectory)
-        ego_multiple_trajs = to_trajectories(header=msg.header,
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "map"
+
+        ego_multiple_trajs_future = None
+        if pred_scores_future is not None and pred_trajs_future is not None and self.propagate_future_states:
+            ego_multiple_trajs_future = to_trajectories(header=header,
+                                                        infos=[future_ego_info],
+                                                        pred_scores=pred_scores_future,
+                                                        pred_trajs=pred_trajs_future,
+                                                        score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
+            last_p = self._prev_trajectory.points[-1]
+            ego_multiple_trajs_future = self.simple_trajectory_concatenation(
+                self._prev_trajectory, ego_multiple_trajs_future, current_ego)
+        #     ego_multiple_trajs_future = self.concatenate_trajectories(
+        #         self._prev_trajectory, ego_multiple_trajs_future, current_ego)
+
+        ego_multiple_trajs = to_trajectories(header=header,
                                              infos=[info],
                                              pred_scores=pred_scores,
                                              pred_trajs=pred_trajs,
                                              score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
 
+        if (ego_multiple_trajs_future is not None and len(ego_multiple_trajs_future.trajectories) > 0):
+            for trajectory in ego_multiple_trajs_future.trajectories:
+                trajectory.header = header
+                ego_multiple_trajs.trajectories.append(trajectory)
+        else:
+            print("------skipped? Reason: --------")
+            if (ego_multiple_trajs_future is not None):
+                print("len(ego_multiple_trajs_future.trajectories) > 0",
+                      len(ego_multiple_trajs_future.trajectories) > 0)
+            print("pred_scores_future is not None and pred_trajs_future",
+                  pred_scores_future is not None, pred_scores_future is not None)
+            print("ego_history_from_traj is not None", ego_history_from_traj is not None)
+            print("------skipped? Reason: --------")
+
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         # convert to ROS msg
         pred_objs = to_predicted_objects(
-            header=msg.header,
+            header=header,
             infos=[info],
             pred_scores=pred_scores,
             pred_trajs=pred_trajs,
@@ -332,7 +367,7 @@ class MTRNode(Node):
 
         if pred_scores_future is not None and pred_trajs_future is not None and self.propagate_future_states:
             pred_objs_future = to_predicted_objects(
-                header=msg.header,
+                header=header,
                 infos=[future_ego_info],
                 pred_scores=pred_scores_future,
                 pred_trajs=pred_trajs_future,
@@ -520,7 +555,8 @@ class MTRNode(Node):
 
         # Ensure valid interpolation range
         if times[-1] < t_interp[-1]:  # Not enough data to interpolate fully
-            raise ValueError("Not enough trajectory data to interpolate full 1-second interval.")
+            return original_traj
+            # raise ValueError("Not enough trajectory data to interpolate full 1-second interval.")
 
         # Create interpolators
         interp_x = interp1d(times, x, kind='linear', fill_value="extrapolate")
@@ -560,22 +596,21 @@ class MTRNode(Node):
 
     def get_ego_history_from_trajectory(self, previous_best_trajectory: Trajectory, time_from_end_of_trajectory: float):
         if (previous_best_trajectory is None or len(previous_best_trajectory.points) == 0):
-            return None
+            return None, None, None
 
         last_point: TrajectoryPoint = previous_best_trajectory.points[-1]
 
         time_start: float = last_point.time_from_start.sec + \
             float(last_point.time_from_start.nanosec) * 1e-9 - time_from_end_of_trajectory
-        if time_start < 0:
-            return None
+        time_start = max(0.0, time_start)
 
-        reduced_trajectory: NewTrajectory = self.interpolate_trajectory(
+        interpolated_trajectory: NewTrajectory = self.interpolate_trajectory(
             previous_best_trajectory, time_start)
         history = AgentHistory(max_length=self._num_timestamps)
         start_index = 0
-        end_index = len(reduced_trajectory.points) - 1
+        end_index = len(interpolated_trajectory.points) - 1
         for i in range(start_index, end_index):
-            point = reduced_trajectory.points[i]
+            point = interpolated_trajectory.points[i]
             state, info = from_trajectory_point(point=point, uuid=self._ego_uuid_future, header=previous_best_trajectory.header, label_id=AgentLabel.VEHICLE,
                                                 size=self.ego_dimensions)
             history.update_state(state, info)
@@ -593,28 +628,85 @@ class MTRNode(Node):
                 nearest_index = i
         return nearest_index
 
-    def to_new_trajectory(self, trajectory: Trajectory):
+    def simple_trajectory_concatenation(self, base_trajectory: Trajectory, trajectories: Trajectories, ego_state: AgentState) -> Trajectories:
+        output = Trajectories()
+        output.generator_info = trajectories.generator_info
+        base_size = len(base_trajectory.points)
+
+        closest_ego_index = self.find_nearest_index(base_trajectory, ego_state)
+
+        for i in range(len(trajectories.trajectories)):
+            trajectory = trajectories.trajectories[i]
+            added_traj_length = len(trajectory.points)
+            n = min(10, added_traj_length) if base_size < 150 else 0
+            new_trajectory = NewTrajectory()
+            new_trajectory.header = trajectory.header
+            new_trajectory.generator_id = self._generator_uuid
+            new_trajectory.points = base_trajectory.points
+
+            last_time = self.get_time_float(base_trajectory.points[-1].time_from_start) - self.get_time_float(
+                base_trajectory.points[closest_ego_index].time_from_start)
+            print("base size", base_size, "last_time ", last_time)
+
+            j = 0
+            while j < n and last_time < self._min_prediction_time:
+                last_time += self.get_time_float(trajectory.points[j].time_from_start)
+                new_trajectory.points.append(trajectory.points[j])
+                j += 1
+            output.trajectories.append(new_trajectory)
+            print("outsize", len(new_trajectory.points))
+        return output
+
+    def to_new_trajectory(self, trajectory: Trajectory, generator_id) -> NewTrajectory:
         output = NewTrajectory()
         output.points = trajectory.points
         output.header = trajectory.header
+        output.header.stamp = self.get_clock().now().to_msg()
+        output.generator_id = generator_id
+        return output
 
-    def concatenate_trajectory(self,  trajectory: NewTrajectory, added_trajectory: NewTrajectory, ego_index: int):
-        original_time_length = self.get_time_float(trajectory.points[-1])
-        output_trajectory = self.crop_trajectory(trajectory=trajectory, ego_index=ego_index)
+    def concatenate_trajectories(self, base_trajectory: Trajectory, trajectories: Trajectories, ego_state: AgentState) -> Trajectories:
 
-        output_time_length = self.get_time_float(output_trajectory)
-        while (output_time_length < original_time_length):
+        base_trajectory_new_format = self.to_new_trajectory(
+            self.interpolate_trajectory(base_trajectory, 0.0), self._generator_uuid)
+        ego_index = self.find_nearest_index(base_trajectory_new_format, ego_state)
+        cropped_base_trajectory = self.crop_trajectory(
+            base_trajectory_new_format, ego_index)
+        cropped_base_trajectory.header.stamp = self.get_clock().now().to_msg()
 
-    def crop_trajectory(self, trajectory: Trajectory, ego_index: int):
+        output = deepcopy(trajectories)
+        output.trajectories = []
+        for trajectory in trajectories.trajectories:
+            out_trajectory = self.concatenate_trajectory(
+                cropped_base_trajectory, trajectory, ego_index)
+            output.trajectories.append(out_trajectory)
+        return output
+
+    def concatenate_trajectory(self,  cropped_trajectory: NewTrajectory, added_trajectory: NewTrajectory, ego_index: int):
+        original_time_length = self.get_time_float(cropped_trajectory.points[-1].time_from_start)
+        output_trajectory = deepcopy(cropped_trajectory)
+        output_time_length = self.get_time_float(output_trajectory.points[-1].time_from_start)
+        for i, p in enumerate(added_trajectory.points):
+            if (output_time_length >= self._min_prediction_time * 2.0):
+                break
+            output_time_length += self.get_time_float(p.time_from_start)
+            p.time_from_start = Duration(
+                seconds=int(output_time_length), nanoseconds=int((output_time_length % 1) * 1e9)).to_msg()
+            output_trajectory.points.append(p)
+
+        output_trajectory.header = added_trajectory.header
+        return output_trajectory
+
+    def crop_trajectory(self, trajectory: NewTrajectory, ego_index: int):
         if ego_index == 0:
             return trajectory
 
-        first_point = trajectory[ego_index]
+        first_point = trajectory.points[ego_index]
         time_offset = self.get_time_float(first_point.time_from_start)
         output_trajectory = deepcopy(trajectory)
-        output_trajectory.points = output_trajectory.points[time_offset:]
+        # output_trajectory.points = output_trajectory.points[ego_index:]
         for i, point in enumerate(output_trajectory.points):
-            t = self.get_time_float(point.time_from_start) - time_offset
+            t = max(self.get_time_float(point.time_from_start) - time_offset, 0.0)
             output_trajectory.points[i].time_from_start = Duration(
                 seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
         return output_trajectory
