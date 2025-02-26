@@ -200,7 +200,6 @@ class MTRNode(Node):
         self._batch_polylines_mask = None
         self._prev_trajectory: Trajectory | None = None
         self._last_ego: AgentState | None = None
-        self._last_trajectories = None
         self._label_ids = [AgentLabel.from_str(label).value for label in labels]
 
         cfg = Config.from_file(model_config_path)
@@ -289,6 +288,10 @@ class MTRNode(Node):
             self.count = self.count + 1
             return
 
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "map"
+
         # pre-process
         pre_processed_input = self._create_pre_processed_input(current_ego, self._history)
 
@@ -302,8 +305,25 @@ class MTRNode(Node):
         pred_scores, pred_trajs = self._postprocess(
             pred_scores, pred_trajs, current_target_trajectory)
 
+        ego_multiple_trajs = to_trajectories(header=header,
+                                             infos=[info],
+                                             pred_scores=pred_scores,
+                                             pred_trajs=pred_trajs,
+                                             score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
+
+        # convert to ROS msg
+        pred_objs = to_predicted_objects(
+            header=header,
+            infos=[info],
+            pred_scores=pred_scores,
+            pred_trajs=pred_trajs,
+            score_threshold=self._score_threshold,
+        )
+
         pred_scores_future, pred_trajs_future, future_ego_state = None, None, None
         ego_history_from_traj = None
+        ego_multiple_trajs_future = None
+
         if self.propagate_future_states and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
             ego_history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
                 self._prev_trajectory, 1.1)
@@ -318,59 +338,35 @@ class MTRNode(Node):
                 pred_scores_future, pred_trajs_future = self._postprocess(
                     pred_scores_future, pred_trajs_future_propagation, future_agent_trajectory)
 
-        header = Header()
-        header.stamp = self.get_clock().now().to_msg()
-        header.frame_id = "map"
+                if pred_scores_future is not None and pred_trajs_future is not None:
+                    # Predict ego states using previous trajectory as base
+                    ego_multiple_trajs_future = to_trajectories(header=header,
+                                                                infos=[future_ego_info],
+                                                                pred_scores=pred_scores_future,
+                                                                pred_trajs=pred_trajs_future,
+                                                                score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
+                    ego_multiple_trajs_future = self.simple_trajectory_concatenation(
+                        self._prev_trajectory, ego_multiple_trajs_future, current_ego)
 
-        ego_multiple_trajs_future = None
-        if pred_scores_future is not None and pred_trajs_future is not None and self.propagate_future_states:
-            ego_multiple_trajs_future = to_trajectories(header=header,
-                                                        infos=[future_ego_info],
-                                                        pred_scores=pred_scores_future,
-                                                        pred_trajs=pred_trajs_future,
-                                                        score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
-            last_p = self._prev_trajectory.points[-1]
-            ego_multiple_trajs_future = self.simple_trajectory_concatenation(
-                self._prev_trajectory, ego_multiple_trajs_future, current_ego)
-        #     ego_multiple_trajs_future = self.concatenate_trajectories(
-        #         self._prev_trajectory, ego_multiple_trajs_future, current_ego)
-
-        ego_multiple_trajs = to_trajectories(header=header,
-                                             infos=[info],
-                                             pred_scores=pred_scores,
-                                             pred_trajs=pred_trajs,
-                                             score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
-
-        if (ego_multiple_trajs_future is not None and len(ego_multiple_trajs_future.trajectories) > 0):
-            for trajectory in ego_multiple_trajs_future.trajectories:
-                trajectory.header = header
-                ego_multiple_trajs.trajectories.append(trajectory)
+                    if len(ego_multiple_trajs_future.trajectories) > 0:
+                        # Trajectory prediction
+                        for trajectory in ego_multiple_trajs_future.trajectories:
+                            trajectory.header = header
+                            ego_multiple_trajs.trajectories.append(trajectory)
+                        # Predicted object creation
+                        pred_objs_future = to_predicted_objects(
+                            header=header,
+                            infos=[future_ego_info],
+                            pred_scores=pred_scores_future,
+                            pred_trajs=pred_trajs_future,
+                            score_threshold=self._score_threshold,
+                        )
+                        for object in pred_objs_future.objects:
+                            pred_objs.objects.append(object)
 
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
-        # convert to ROS msg
-        pred_objs = to_predicted_objects(
-            header=header,
-            infos=[info],
-            pred_scores=pred_scores,
-            pred_trajs=pred_trajs,
-            score_threshold=self._score_threshold,
-        )
-
-        if pred_scores_future is not None and pred_trajs_future is not None and self.propagate_future_states:
-            pred_objs_future = to_predicted_objects(
-                header=header,
-                infos=[future_ego_info],
-                pred_scores=pred_scores_future,
-                pred_trajs=pred_trajs_future,
-                score_threshold=self._score_threshold,
-            )
-            for object in pred_objs_future.objects:
-                pred_objs.objects.append(object)
-
         self._publisher.publish(pred_objs)
-
         self._last_ego = current_ego
-        self._last_trajectories = ego_multiple_trajs
 
     def _postprocess(
         self,
