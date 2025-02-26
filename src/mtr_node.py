@@ -4,6 +4,8 @@ import numpy as np
 from collections import deque
 from copy import deepcopy
 import numpy as np
+import math
+
 from scipy.interpolate import interp1d
 from typing import List
 
@@ -325,6 +327,48 @@ class MTRNode(Node):
                 out_objects.objects.append(predicted_object)
         return out_trajectories, out_objects
 
+    def _generate_steering_bias(self, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, yaw_bias: float):
+        def normalize_angle(angle: float) -> float:
+            """Normalize angle to range [-π, π]."""
+            return (angle + math.pi) % (2 * math.pi) - math.pi
+
+        def move_history(histories: dict[str, deque[AgentState]], old_key: str, new_key: str):
+            if old_key in histories:
+                histories[new_key] = histories.pop(old_key)
+
+        def get_modified_agent_info(original_ros_uuid: RosUUID, ros_uuid: RosUUID, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, new_yaw: float):
+            biased_state: AgentState = deepcopy(base_agent_state)
+            biased_state.yaw = new_yaw
+
+            biased_info: OriginalInfo = deepcopy(base_agent_info)
+            biased_info.kinematics.pose_with_covariance.pose.orientation = _yaw_to_quaternion(
+                new_yaw)
+            biased_info.uuid = ros_uuid
+
+            biased_history: AgentHistory = deepcopy(base_agent_history)
+            move_history(biased_history, original_ros_uuid, ros_uuid)
+            biased_history.update_state(biased_state, biased_info)
+            return biased_state, biased_info, biased_history
+
+        original_yaw = base_agent_state.yaw
+        yaws = [normalize_angle(original_yaw + abs(yaw_bias)),
+                normalize_angle(original_yaw - abs(yaw_bias))]
+
+        uuids = [hashlib.shake_256("EGO_LEFT".encode()).hexdigest(
+            8), hashlib.shake_256("EGO_RIGHT".encode()).hexdigest(8)]
+
+        biased_states = []
+        biased_infos = []
+        biased_histories = []
+
+        for yaw, uuid in zip(yaws, uuids):
+            biased_state, biased_info, biased_history = get_modified_agent_info(original_ros_uuid=self._ego_uuid,
+                                                                                ros_uuid=uuid, base_agent_state=base_agent_state, base_agent_info=base_agent_info, base_agent_history=base_agent_history, new_yaw=yaw)
+            biased_states.append(biased_state)
+            biased_infos.append(biased_info)
+            biased_histories.append(biased_history)
+        return biased_states, biased_infos, biased_histories, uuids
+
     def _callback(self, msg: Odometry) -> None:
         # remove invalid ancient agent history
         timestamp = timestamp2ms(msg.header)
@@ -337,6 +381,9 @@ class MTRNode(Node):
             label_id=AgentLabel.VEHICLE,
             size=self.ego_dimensions,
         )
+        biased_states, biased_infos, biased_histories, bias_uuids = self._generate_steering_bias(
+            current_ego, info, self._history, math.pi/12)
+
         self._history.update_state(current_ego, info)
 
         if self.count < self._num_timestamps:
@@ -349,6 +396,13 @@ class MTRNode(Node):
         histories = [self._history]
         requires_concatenation = [False]
         uuids = [self._ego_uuid]
+
+        for biased_state, biased_info, biased_history, bias_uuid in zip(biased_states, biased_infos, biased_histories, bias_uuids):
+            ego_states.append(biased_state)
+            infos.append(biased_info)
+            histories.append(biased_history)
+            requires_concatenation.append(False)
+            uuids.append(bias_uuid)
 
         if self.propagate_future_states and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
             history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
