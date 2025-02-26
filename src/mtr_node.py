@@ -23,6 +23,8 @@ from std_msgs.msg import Header
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
+
 
 from numpy.typing import NDArray
 from rcl_interfaces.msg import ParameterDescriptor
@@ -30,10 +32,10 @@ from utils.polyline import TargetCentricPolyline
 
 from autoware_perception_msgs.msg import PredictedObjects
 from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
-from autoware_new_planning_msgs.msg import Trajectories
+from autoware_new_planning_msgs.msg import Trajectories, TrajectoryGeneratorInfo
 from autoware_new_planning_msgs.msg import Trajectory as NewTrajectory
 from unique_identifier_msgs.msg import UUID as RosUUID
-from autoware_mtr.dataclass.agent import _str_to_uuid_msg
+from autoware_mtr.dataclass.agent import _str_to_uuid_msg, OriginalInfo
 
 from autoware_perception_msgs.msg import TrackedObject
 from autoware_perception_msgs.msg import TrackedObjects
@@ -270,6 +272,59 @@ class MTRNode(Node):
         states, infos = from_tracked_objects(msg)
         self._history.update(states, infos)
 
+    def _do_predictions(self, true_ego_state: AgentState, ego_states: List[AgentState], infos: List[OriginalInfo], histories: List[AgentHistory], requires_concatenation: List[bool], uuids: List[RosUUID]):
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "map"
+
+        out_objects: PredictedObjects = PredictedObjects()
+        out_objects.header = header
+
+        out_trajectories: Trajectories = Trajectories()
+        generator_name: String = String()
+        generator_name.data = "mtr"
+        out_trajectories.generator_info = [TrajectoryGeneratorInfo(
+            generator_id=self._generator_uuid, generator_name=generator_name)]
+
+        for ego_state, info, history, concatenate, uuid in zip(ego_states, infos, histories, requires_concatenation, uuids):
+            pre_processed_input = self._create_pre_processed_input(ego_state, history)
+
+            # inference
+            with torch.no_grad():
+                pred_scores, pred_trajs = self.model(**pre_processed_input)
+
+            # post-process
+            current_target_trajectory, _ = history.target_as_trajectory(
+                uuid, latest=True)
+            pred_scores, pred_trajs = self._postprocess(
+                pred_scores, pred_trajs, current_target_trajectory)
+
+            ego_multiple_trajs = to_trajectories(header=header,
+                                                 infos=[info],
+                                                 pred_scores=pred_scores,
+                                                 pred_trajs=pred_trajs,
+                                                 score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
+
+            if concatenate:
+                ego_multiple_trajs = self.simple_trajectory_concatenation(
+                    self._prev_trajectory, ego_multiple_trajs, true_ego_state)
+
+            # convert to ROS msg
+            pred_objs = to_predicted_objects(
+                header=header,
+                infos=[info],
+                pred_scores=pred_scores,
+                pred_trajs=pred_trajs,
+                score_threshold=self._score_threshold,
+            )
+
+            for trajectory in ego_multiple_trajs.trajectories:
+                out_trajectories.trajectories.append(trajectory)
+
+            for predicted_object in pred_objs.objects:
+                out_objects.objects.append(predicted_object)
+        return out_trajectories, out_objects
+
     def _callback(self, msg: Odometry) -> None:
         # remove invalid ancient agent history
         timestamp = timestamp2ms(msg.header)
@@ -288,81 +343,25 @@ class MTRNode(Node):
             self.count = self.count + 1
             return
 
-        header = Header()
-        header.stamp = self.get_clock().now().to_msg()
-        header.frame_id = "map"
-
-        # pre-process
-        pre_processed_input = self._create_pre_processed_input(current_ego, self._history)
-
-        # inference
-        with torch.no_grad():
-            pred_scores, pred_trajs = self.model(**pre_processed_input)
-
-        # post-process
-        current_target_trajectory, _ = self._history.target_as_trajectory(
-            self._ego_uuid, latest=True)
-        pred_scores, pred_trajs = self._postprocess(
-            pred_scores, pred_trajs, current_target_trajectory)
-
-        ego_multiple_trajs = to_trajectories(header=header,
-                                             infos=[info],
-                                             pred_scores=pred_scores,
-                                             pred_trajs=pred_trajs,
-                                             score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
-
-        # convert to ROS msg
-        pred_objs = to_predicted_objects(
-            header=header,
-            infos=[info],
-            pred_scores=pred_scores,
-            pred_trajs=pred_trajs,
-            score_threshold=self._score_threshold,
-        )
-
-        pred_scores_future, pred_trajs_future, future_ego_state = None, None, None
-        ego_history_from_traj = None
-        ego_multiple_trajs_future = None
+        true_ego_state = deepcopy(current_ego)
+        ego_states = [current_ego]
+        infos = [info]
+        histories = [self._history]
+        requires_concatenation = [False]
+        uuids = [self._ego_uuid]
 
         if self.propagate_future_states and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
-            ego_history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
+            history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
                 self._prev_trajectory, 1.1)
-            if ego_history_from_traj is not None:
-                pre_processed_input_future = self._create_pre_processed_input(
-                    future_ego_state, ego_history_from_traj)
-                with torch.no_grad():
-                    pred_scores_future, pred_trajs_future_propagation = self.model(
-                        **pre_processed_input_future)
-                future_agent_trajectory, _ = ego_history_from_traj.target_as_trajectory(
-                    self._ego_uuid_future, latest=True)
-                pred_scores_future, pred_trajs_future = self._postprocess(
-                    pred_scores_future, pred_trajs_future_propagation, future_agent_trajectory)
+            if history_from_traj is not None:
+                ego_states.append(future_ego_state)
+                infos.append(future_ego_info)
+                histories.append(history_from_traj)
+                requires_concatenation.append(True)
+                uuids.append(self._ego_uuid_future)
 
-                if pred_scores_future is not None and pred_trajs_future is not None:
-                    # Predict ego states using previous trajectory as base
-                    ego_multiple_trajs_future = to_trajectories(header=header,
-                                                                infos=[future_ego_info],
-                                                                pred_scores=pred_scores_future,
-                                                                pred_trajs=pred_trajs_future,
-                                                                score_threshold=self._score_threshold, generator_uuid=self._generator_uuid)
-                    ego_multiple_trajs_future = self.simple_trajectory_concatenation(
-                        self._prev_trajectory, ego_multiple_trajs_future, current_ego)
-
-                    if len(ego_multiple_trajs_future.trajectories) > 0:
-                        # Trajectory prediction
-                        for trajectory in ego_multiple_trajs_future.trajectories:
-                            trajectory.header = header
-                            ego_multiple_trajs.trajectories.append(trajectory)
-                        # Predicted object creation
-                        pred_objs_future = to_predicted_objects(
-                            header=header,
-                            infos=[future_ego_info],
-                            pred_scores=pred_scores_future,
-                            pred_trajs=pred_trajs_future,
-                            score_threshold=self._score_threshold,
-                        )
-                        for object in pred_objs_future.objects:
-                            pred_objs.objects.append(object)
+        ego_multiple_trajs, pred_objs = self._do_predictions(
+            true_ego_state=true_ego_state, ego_states=ego_states, infos=infos, histories=histories, requires_concatenation=requires_concatenation, uuids=uuids)
 
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         self._publisher.publish(pred_objs)
