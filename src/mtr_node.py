@@ -345,15 +345,6 @@ class MTRNode(Node):
             for trajectory in ego_multiple_trajs_future.trajectories:
                 trajectory.header = header
                 ego_multiple_trajs.trajectories.append(trajectory)
-        else:
-            print("------skipped? Reason: --------")
-            if (ego_multiple_trajs_future is not None):
-                print("len(ego_multiple_trajs_future.trajectories) > 0",
-                      len(ego_multiple_trajs_future.trajectories) > 0)
-            print("pred_scores_future is not None and pred_trajs_future",
-                  pred_scores_future is not None, pred_scores_future is not None)
-            print("ego_history_from_traj is not None", ego_history_from_traj is not None)
-            print("------skipped? Reason: --------")
 
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         # convert to ROS msg
@@ -646,15 +637,12 @@ class MTRNode(Node):
 
             last_time = self.get_time_float(base_trajectory.points[-1].time_from_start) - self.get_time_float(
                 base_trajectory.points[closest_ego_index].time_from_start)
-            print("base size", base_size, "last_time ", last_time)
-
             j = 0
             while j < n and last_time < self._min_prediction_time:
                 last_time += self.get_time_float(trajectory.points[j].time_from_start)
                 new_trajectory.points.append(trajectory.points[j])
                 j += 1
             output.trajectories.append(new_trajectory)
-            print("outsize", len(new_trajectory.points))
         return output
 
     def to_new_trajectory(self, trajectory: Trajectory, generator_id) -> NewTrajectory:
