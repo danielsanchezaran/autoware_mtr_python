@@ -332,21 +332,34 @@ class MTRNode(Node):
             """Normalize angle to range [-π, π]."""
             return (angle + math.pi) % (2 * math.pi) - math.pi
 
-        def move_history(histories: dict[str, deque[AgentState]], old_key: str, new_key: str):
-            if old_key in histories:
-                histories[new_key] = histories.pop(old_key)
+        def move_history_and_info(histories: AgentHistory, old_key: str, new_key: str):
+            if old_key in histories.histories and old_key in histories.infos:
+                histories.histories[new_key] = histories.histories.pop(old_key)
+                histories.infos[new_key] = histories.infos.pop(old_key)
 
-        def get_modified_agent_info(original_ros_uuid: RosUUID, ros_uuid: RosUUID, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, new_yaw: float):
-            biased_state: AgentState = deepcopy(base_agent_state)
-            biased_state.yaw = new_yaw
+        def get_modified_agent_info(original_uuid: str, uuid: str, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, new_yaw: float):
+            biased_state: AgentState = AgentState(uuid=uuid,
+                                                  timestamp=base_agent_state.timestamp,
+                                                  label_id=base_agent_state.label_id,
+                                                  xyz=base_agent_state.xyz,
+                                                  size=base_agent_state.size,
+                                                  yaw=new_yaw,
+                                                  vxy=base_agent_state.vxy,
+                                                  is_valid=base_agent_state.is_valid)
 
-            biased_info: OriginalInfo = deepcopy(base_agent_info)
-            biased_info.kinematics.pose_with_covariance.pose.orientation = _yaw_to_quaternion(
+            new_kinematics = base_agent_info.kinematics
+            new_kinematics.pose_with_covariance.pose.orientation = _yaw_to_quaternion(
                 new_yaw)
-            biased_info.uuid = ros_uuid
+
+            ros_uuid = _str_to_uuid_msg(uuid)
+            biased_info: OriginalInfo = OriginalInfo(uuid=ros_uuid,
+                                                     kinematics=new_kinematics,
+                                                     classification=base_agent_info.classification,
+                                                     shape=base_agent_info.shape,
+                                                     existence_probability=base_agent_info.existence_probability)
 
             biased_history: AgentHistory = deepcopy(base_agent_history)
-            move_history(biased_history, original_ros_uuid, ros_uuid)
+            move_history_and_info(biased_history, original_uuid, uuid)
             biased_history.update_state(biased_state, biased_info)
             return biased_state, biased_info, biased_history
 
@@ -362,8 +375,8 @@ class MTRNode(Node):
         biased_histories = []
 
         for yaw, uuid in zip(yaws, uuids):
-            biased_state, biased_info, biased_history = get_modified_agent_info(original_ros_uuid=self._ego_uuid,
-                                                                                ros_uuid=uuid, base_agent_state=base_agent_state, base_agent_info=base_agent_info, base_agent_history=base_agent_history, new_yaw=yaw)
+            biased_state, biased_info, biased_history = get_modified_agent_info(original_uuid=self._ego_uuid,
+                                                                                uuid=uuid, base_agent_state=base_agent_state, base_agent_info=base_agent_info, base_agent_history=base_agent_history, new_yaw=yaw)
             biased_states.append(biased_state)
             biased_infos.append(biased_info)
             biased_histories.append(biased_history)
@@ -381,8 +394,6 @@ class MTRNode(Node):
             label_id=AgentLabel.VEHICLE,
             size=self.ego_dimensions,
         )
-        biased_states, biased_infos, biased_histories, bias_uuids = self._generate_steering_bias(
-            current_ego, info, self._history, math.pi/12)
 
         self._history.update_state(current_ego, info)
 
@@ -397,22 +408,24 @@ class MTRNode(Node):
         requires_concatenation = [False]
         uuids = [self._ego_uuid]
 
-        for biased_state, biased_info, biased_history, bias_uuid in zip(biased_states, biased_infos, biased_histories, bias_uuids):
-            ego_states.append(biased_state)
-            infos.append(biased_info)
-            histories.append(biased_history)
-            requires_concatenation.append(False)
-            uuids.append(bias_uuid)
-
         if self.propagate_future_states and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
             history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
-                self._prev_trajectory, 1.1)
+                self._prev_trajectory, 4.0)
             if history_from_traj is not None:
                 ego_states.append(future_ego_state)
                 infos.append(future_ego_info)
                 histories.append(history_from_traj)
                 requires_concatenation.append(True)
                 uuids.append(self._ego_uuid_future)
+
+                biased_states, biased_infos, biased_histories, bias_uuids = self._generate_steering_bias(
+                    future_ego_state, future_ego_info, history_from_traj, math.pi/18)
+                for biased_state, biased_info, biased_history, bias_uuid in zip(biased_states, biased_infos, biased_histories, bias_uuids):
+                    ego_states.append(biased_state)
+                    infos.append(biased_info)
+                    histories.append(biased_history)
+                    requires_concatenation.append(True)
+                    uuids.append(bias_uuid)
 
         ego_multiple_trajs, pred_objs = self._do_predictions(
             true_ego_state=true_ego_state, ego_states=ego_states, infos=infos, histories=histories, requires_concatenation=requires_concatenation, uuids=uuids)
@@ -475,22 +488,22 @@ class MTRNode(Node):
         N = num_agent
         T = num_time
 
-        past_xyz = np.ones((num_target, num_agent, num_time, 3), dtype=np.float32)
-        last_xyz = np.ones((num_target, num_agent, 1, 3), dtype=np.float32)
-        past_xyz_size = np.ones((num_target, num_agent, num_time, 3), dtype=np.int32)
-        past_vxy = np.ones((num_target, num_agent, num_time, 2), dtype=np.float32)
-        yaw_embed = np.ones((num_target, num_agent, num_time, 2), dtype=np.float32)
-        timestamps = np.arange(0, num_time * 0.1, 0.1, dtype=np.float32)
-        time_embed = np.zeros((num_target, num_agent, num_time, num_time + 1), dtype=np.float32)
-        time_embed[:, :, np.arange(num_time), np.arange(num_time)] = 1
-        time_embed[:, :, :num_time, -1] = timestamps
+        past_xyz = np.ones((B, N, T, 3), dtype=np.float32)
+        last_xyz = np.ones((B, N, 1, 3), dtype=np.float32)
+        past_xyz_size = np.ones((B, N, T, 3), dtype=np.int32)
+        past_vxy = np.ones((B, N, T, 2), dtype=np.float32)
+        yaw_embed = np.ones((B, N, T, 2), dtype=np.float32)
+        timestamps = np.arange(0, T * 0.1, 0.1, dtype=np.float32)
+        time_embed = np.zeros((B, N, T, T + 1), dtype=np.float32)
+        time_embed[:, :, np.arange(T), np.arange(T)] = 1
+        time_embed[:, :, :T, -1] = timestamps
 
-        type_onehot = np.zeros((num_target, num_agent, num_time, num_type + 2), dtype=np.float32)
-        type_onehot[np.arange(num_target), 0, :, num_type] = 1  # Only ego is target, so index is 0
+        type_onehot = np.zeros((B, N, T, num_type + 2), dtype=np.float32)
+        type_onehot[np.arange(B), 0, :, num_type] = 1  # Only ego is target, so index is 0
         type_onehot[:, 0, :, num_type + 1] = 1             # scenario.ego_index replaced by 0
 
         trajectory_mask = torch.ones(
-            [num_target, num_agent, num_time], dtype=torch.bool).cuda()
+            [B, N, T], dtype=torch.bool).cuda()
 
         for b in range(len(target_ids)):
             for n in range(len(agent_histories)):
@@ -634,14 +647,14 @@ class MTRNode(Node):
 
         return new_traj
 
-    def get_ego_history_from_trajectory(self, previous_best_trajectory: Trajectory, time_from_end_of_trajectory: float):
+    def get_ego_history_from_trajectory(self, previous_best_trajectory: Trajectory, time_start: float):
         if (previous_best_trajectory is None or len(previous_best_trajectory.points) == 0):
             return None, None, None
 
-        last_point: TrajectoryPoint = previous_best_trajectory.points[-1]
+        # last_point: TrajectoryPoint = previous_best_trajectory.points[-1]
 
-        time_start: float = last_point.time_from_start.sec + \
-            float(last_point.time_from_start.nanosec) * 1e-9 - time_from_end_of_trajectory
+        # time_start: float = self.get_time_float(
+        #     last_point.time_from_start) - time_from_end_of_trajectory
         time_start = max(0.0, time_start)
 
         interpolated_trajectory: NewTrajectory = self.interpolate_trajectory(
@@ -655,6 +668,18 @@ class MTRNode(Node):
                                                 size=self.ego_dimensions)
             history.update_state(state, info)
         return history, state, info
+
+    def find_nearest_index_point(self, trajectory: NewTrajectory, point: TrajectoryPoint):
+        x, y = point.pose.position.x, point.pose.position.y
+        min_distance = 100000.0
+        nearest_index = 0
+
+        for i, point in enumerate(trajectory.points):
+            dist = (point.pose.position.x - x) ** 2 + (point.pose.position.y - y)
+            if dist < min_distance:
+                min_distance = dist
+                nearest_index = i
+        return nearest_index
 
     def find_nearest_index(self, trajectory: NewTrajectory, current_ego: AgentState):
         x, y = current_ego.xy
@@ -677,17 +702,21 @@ class MTRNode(Node):
 
         for i in range(len(trajectories.trajectories)):
             trajectory = trajectories.trajectories[i]
+            closest_point_between_trajectories = self.find_nearest_index_point(
+                base_trajectory, trajectory.points[0]) - 1
+            closest_point_between_trajectories = max(
+                max(closest_point_between_trajectories, 0), closest_ego_index + 1)
             added_traj_length = len(trajectory.points)
-            n = min(10, added_traj_length) if base_size < 150 else 0
+            n = min(100, added_traj_length) if base_size < 100 else 0
             new_trajectory = NewTrajectory()
             new_trajectory.header = trajectory.header
             new_trajectory.generator_id = self._generator_uuid
-            new_trajectory.points = base_trajectory.points
+            new_trajectory.points = base_trajectory.points[:closest_point_between_trajectories]
 
-            last_time = self.get_time_float(base_trajectory.points[-1].time_from_start) - self.get_time_float(
-                base_trajectory.points[closest_ego_index].time_from_start)
+            last_time = self.get_time_float(new_trajectory.points[-1].time_from_start) - self.get_time_float(
+                new_trajectory.points[closest_ego_index].time_from_start)
             j = 0
-            while j < n and last_time < self._min_prediction_time:
+            while j < n and j < len(trajectory.points) and last_time < self._min_prediction_time:
                 last_time += self.get_time_float(trajectory.points[j].time_from_start)
                 new_trajectory.points.append(trajectory.points[j])
                 j += 1
@@ -703,7 +732,6 @@ class MTRNode(Node):
         return output
 
     def concatenate_trajectories(self, base_trajectory: Trajectory, trajectories: Trajectories, ego_state: AgentState) -> Trajectories:
-
         base_trajectory_new_format = self.to_new_trajectory(
             self.interpolate_trajectory(base_trajectory, 0.0), self._generator_uuid)
         ego_index = self.find_nearest_index(base_trajectory_new_format, ego_state)
@@ -718,35 +746,6 @@ class MTRNode(Node):
                 cropped_base_trajectory, trajectory, ego_index)
             output.trajectories.append(out_trajectory)
         return output
-
-    def concatenate_trajectory(self,  cropped_trajectory: NewTrajectory, added_trajectory: NewTrajectory, ego_index: int):
-        original_time_length = self.get_time_float(cropped_trajectory.points[-1].time_from_start)
-        output_trajectory = deepcopy(cropped_trajectory)
-        output_time_length = self.get_time_float(output_trajectory.points[-1].time_from_start)
-        for i, p in enumerate(added_trajectory.points):
-            if (output_time_length >= self._min_prediction_time * 2.0):
-                break
-            output_time_length += self.get_time_float(p.time_from_start)
-            p.time_from_start = Duration(
-                seconds=int(output_time_length), nanoseconds=int((output_time_length % 1) * 1e9)).to_msg()
-            output_trajectory.points.append(p)
-
-        output_trajectory.header = added_trajectory.header
-        return output_trajectory
-
-    def crop_trajectory(self, trajectory: NewTrajectory, ego_index: int):
-        if ego_index == 0:
-            return trajectory
-
-        first_point = trajectory.points[ego_index]
-        time_offset = self.get_time_float(first_point.time_from_start)
-        output_trajectory = deepcopy(trajectory)
-        # output_trajectory.points = output_trajectory.points[ego_index:]
-        for i, point in enumerate(output_trajectory.points):
-            t = max(self.get_time_float(point.time_from_start) - time_offset, 0.0)
-            output_trajectory.points[i].time_from_start = Duration(
-                seconds=int(t), nanoseconds=int((t % 1) * 1e9)).to_msg()
-        return output_trajectory
 
     def get_time_float(self, duration: Duration) -> float:
         return duration.sec + float(duration.nanosec) * 1e-9
