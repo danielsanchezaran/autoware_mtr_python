@@ -725,7 +725,6 @@ class MTRNode(Node):
             closest_point_between_trajectories = max(
                 max(closest_point_between_trajectories, 0), closest_ego_index + 1)
             added_traj_length = len(trajectory.points)
-            n = min(100, added_traj_length) if base_size < 100 else 0
             new_trajectory = NewTrajectory()
             new_trajectory.header = trajectory.header
             new_trajectory.generator_id = self._generator_uuid
@@ -735,7 +734,7 @@ class MTRNode(Node):
                 new_trajectory.points[closest_ego_index].time_from_start), 0.0)
             last_point_time = last_time_from_previous_path
             j = 0
-            while j < n and j < len(trajectory.points) and last_point_time < self._min_prediction_time * 2.0:
+            while j < len(trajectory.points) and last_point_time < self._min_prediction_time * 2.0:
                 last_point_time = last_time_from_previous_path + \
                     self.get_time_float(trajectory.points[j].time_from_start)
                 new_trajectory.points.append(trajectory.points[j])
