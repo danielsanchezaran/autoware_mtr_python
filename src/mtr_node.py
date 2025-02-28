@@ -177,6 +177,18 @@ class MTRNode(Node):
                 type=Parameter.Type.BOOL.value
             )).get_parameter_value().bool_value)
 
+        self.add_left_bias_history = (self.declare_parameter(
+            "add_left_bias_history", False, ParameterDescriptor(
+                description='Propagate future states',
+                type=Parameter.Type.BOOL.value
+            )).get_parameter_value().bool_value)
+
+        self.add_right_bias_history = (self.declare_parameter(
+            "add_right_bias_history", False, ParameterDescriptor(
+                description='Propagate future states',
+                type=Parameter.Type.BOOL.value
+            )).get_parameter_value().bool_value)
+
         self.future_state_propagation_sec = (self.declare_parameter(
             "future_state_propagation_sec", descriptor=descriptor).get_parameter_value().double_value)
 
@@ -327,7 +339,7 @@ class MTRNode(Node):
                 out_objects.objects.append(predicted_object)
         return out_trajectories, out_objects
 
-    def _generate_steering_bias(self, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, yaw_bias: float):
+    def _generate_steering_bias(self, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, yaw_bias: float, bias_left: bool = True, bias_right: bool = True):
         def normalize_angle(angle: float) -> float:
             """Normalize angle to range [-π, π]."""
             return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -364,15 +376,18 @@ class MTRNode(Node):
             return biased_state, biased_info, biased_history
 
         original_yaw = base_agent_state.yaw
-        yaws = [normalize_angle(original_yaw + abs(yaw_bias)),
-                normalize_angle(original_yaw - abs(yaw_bias))]
-
-        uuids = [hashlib.shake_256("EGO_LEFT".encode()).hexdigest(
-            8), hashlib.shake_256("EGO_RIGHT".encode()).hexdigest(8)]
-
+        yaws = []
+        uuids = []
         biased_states = []
         biased_infos = []
         biased_histories = []
+
+        if bias_left:
+            yaws.append(normalize_angle(original_yaw + abs(yaw_bias)))
+            uuids.append(hashlib.shake_256("EGO_LEFT".encode()).hexdigest(8))
+        if bias_right:
+            yaws.append(normalize_angle(original_yaw - abs(yaw_bias)))
+            uuids.append(hashlib.shake_256("EGO_RIGHT".encode()).hexdigest(8))
 
         for yaw, uuid in zip(yaws, uuids):
             biased_state, biased_info, biased_history = get_modified_agent_info(original_uuid=self._ego_uuid,
@@ -408,18 +423,21 @@ class MTRNode(Node):
         requires_concatenation = [False]
         uuids = [self._ego_uuid]
 
-        if self.propagate_future_states and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
+        propagation_required = self.propagate_future_states or self.add_left_bias_history or self.add_right_bias_history
+
+        if propagation_required and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
             history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
-                self._prev_trajectory, 4.0)
-            if history_from_traj is not None:
+                self._prev_trajectory, self.future_state_propagation_sec)
+            if history_from_traj is not None and self.propagate_future_states:
                 ego_states.append(future_ego_state)
                 infos.append(future_ego_info)
                 histories.append(history_from_traj)
                 requires_concatenation.append(True)
                 uuids.append(self._ego_uuid_future)
 
+            if self.add_left_bias_history or self.add_right_bias_history:
                 biased_states, biased_infos, biased_histories, bias_uuids = self._generate_steering_bias(
-                    future_ego_state, future_ego_info, history_from_traj, math.pi/18)
+                    future_ego_state, future_ego_info, history_from_traj, math.pi/18, bias_left=self.add_left_bias_history, bias_right=self.add_right_bias_history)
                 for biased_state, biased_info, biased_history, bias_uuid in zip(biased_states, biased_infos, biased_histories, bias_uuids):
                     ego_states.append(biased_state)
                     infos.append(biased_info)
@@ -713,11 +731,13 @@ class MTRNode(Node):
             new_trajectory.generator_id = self._generator_uuid
             new_trajectory.points = base_trajectory.points[:closest_point_between_trajectories]
 
-            last_time = self.get_time_float(new_trajectory.points[-1].time_from_start) - self.get_time_float(
-                new_trajectory.points[closest_ego_index].time_from_start)
+            last_time_from_previous_path = max(self.get_time_float(new_trajectory.points[-1].time_from_start) - self.get_time_float(
+                new_trajectory.points[closest_ego_index].time_from_start), 0.0)
+            last_point_time = last_time_from_previous_path
             j = 0
-            while j < n and j < len(trajectory.points) and last_time < self._min_prediction_time:
-                last_time += self.get_time_float(trajectory.points[j].time_from_start)
+            while j < n and j < len(trajectory.points) and last_point_time < self._min_prediction_time * 2.0:
+                last_point_time = last_time_from_previous_path + \
+                    self.get_time_float(trajectory.points[j].time_from_start)
                 new_trajectory.points.append(trajectory.points[j])
                 j += 1
             output.trajectories.append(new_trajectory)
