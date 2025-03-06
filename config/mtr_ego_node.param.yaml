@@ -5,10 +5,10 @@
     score_threshold: 0.0 # threshold of predicted score
     labels: ["VEHICLE"] # only ego vehicle is considered
     ego_dimensions: [4.0,2.0,1.0] # [length, width, height]
-    propagate_future_states: true
+    propagate_future_states: false
     add_left_bias_history: false
     add_right_bias_history: false
-    publish_debug_polyline_map: true
+    publish_debug_polyline_map: false
     future_state_propagation_sec: 3.0
 
     # labels: ["VEHICLE", "PEDESTRIAN", "MOTORCYCLIST", "CYCLIST", "BUS"]
