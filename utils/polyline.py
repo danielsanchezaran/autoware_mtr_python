@@ -100,14 +100,43 @@ class TargetCentricPolyline:
         return polylines, polylines_mask
 
     @staticmethod
-    def _load_polyline_center(polyline: NDArrayF32, polyline_mask: NDArrayBool) -> NDArrayF32:
-        tmp_sum = (polyline[..., :3] * polyline_mask[..., None]).sum(axis=-2, dtype=np.float32)
-        polyline_center: NDArrayF32 = tmp_sum / np.clip(
-            polyline_mask.sum(axis=-1, dtype=np.float32)[..., None],
-            a_min=1.0,
-            a_max=None,
-        )
-        return polyline_center.astype(np.float32)
+    def _load_polyline_center(polyline, mask):
+        """
+        Finds the center of arc length for a polyline while considering only valid points.
+
+        Args:
+            polyline (np.ndarray): A (20, 7) array representing a polyline.
+            mask (np.ndarray): A (20,) boolean array indicating valid points.
+
+        Returns:
+            np.ndarray: The interpolated (x, y) coordinate of the arc-length center.
+        """
+        # Extract valid points
+        valid_points = polyline[mask, :3]  # Shape (N_valid, 3) where N_valid ≤ 20
+
+        if len(valid_points) < 2:
+            # If less than 2 valid points, return the first valid point or NaN if none
+            return valid_points[0] if len(valid_points) > 0 else np.array([np.nan, np.nan])
+
+        # Compute segment distances
+        segment_lengths = np.linalg.norm(np.diff(valid_points, axis=0), axis=1)
+
+        # Compute cumulative arc length
+        cumulative_length = np.insert(np.cumsum(segment_lengths), 0, 0)
+
+        # Find the total length and midpoint
+        total_length = cumulative_length[-1]
+        mid_length = total_length / 2
+
+        # Find the segment where the midpoint length falls
+        idx = np.searchsorted(cumulative_length, mid_length) - 1
+
+        # Linear interpolation
+        t = (mid_length - cumulative_length[idx]) / \
+            (cumulative_length[idx + 1] - cumulative_length[idx])
+        center_point = (1 - t) * valid_points[idx] + t * valid_points[idx + 1]
+
+        return center_point
 
     def _generate_batch(self, polylines: NDArrayF32) -> tuple[NDArrayF32, NDArrayBool]:
         """Generate batch polylines from points shape with (N, Dp) to (K, P, Dp).
@@ -204,6 +233,8 @@ class TargetCentricPolyline:
         info: dict = {}
         info["polylines"] = ret_polylines
         info["polylines_mask"] = ret_polylines_mask > 0
-        info["polyline_centers"] = self._load_polyline_center(ret_polylines, ret_polylines_mask)
-
+        info["polyline_centers"] = np.array([[
+            self._load_polyline_center(polyline, mask)
+            for polyline, mask in zip(ret_polyline, ret_polyline_mask)
+        ] for ret_polyline, ret_polyline_mask in zip(ret_polylines, ret_polylines_mask)])
         return info, batch_polylines, batch_polylines_mask
