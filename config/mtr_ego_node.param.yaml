@@ -9,7 +9,7 @@
     add_left_bias_history: false
     add_right_bias_history: false
     publish_debug_polyline_batch: false
-    publish_debug_polyline_map: true
+    publish_debug_polyline_map: false
     future_state_propagation_sec: 3.0
 
     # labels: ["VEHICLE", "PEDESTRIAN", "MOTORCYCLIST", "CYCLIST", "BUS"]
