@@ -205,11 +205,12 @@ class TargetCentricPolyline:
         ret_polylines: NDArrayF32
         ret_polylines_mask: NDArrayBool
         if len(batch_polylines) > self.num_polylines:
-            polyline_center: NDArrayF32 = batch_polylines[..., :2].sum(axis=1) / np.clip(
-                batch_polylines_mask.sum(axis=-1, dtype=np.float32)[:, None],
-                a_min=1.0,
-                a_max=None,
-            )
+            polyline_center: NDArrayF32 = np.array([
+                self._load_polyline_center(polyline, mask)
+                for polyline, mask in zip(batch_polylines, batch_polylines_mask)
+            ])[..., :2]
+
+            print("polyline_center", polyline_center.shape)
             center_offset: NDArrayF32 = np.array(self.center_offset, dtype=np.float32)[None, :].repeat(
                 num_target,
                 axis=0,
@@ -222,6 +223,8 @@ class TargetCentricPolyline:
             center_pos = target_state.xy + center_offset
             distances: NDArrayF32 = np.linalg.norm(
                 center_pos[:, None, :] - polyline_center[None, ...], axis=-1)
+            print("distances ", distances.shape)
+            print("distances", distances)
             topk_idxs = np.argsort(distances, axis=1)[:, : self.num_polylines]
             ret_polylines = batch_polylines[topk_idxs]
             ret_polylines_mask = batch_polylines_mask[topk_idxs]

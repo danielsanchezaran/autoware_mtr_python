@@ -296,30 +296,24 @@ class MTRNode(Node):
 
             marker.points = []
             polyline = polylines[0][i] if len(polylines.shape) == 4 else polylines[i]
-            for p in polyline:
-                if np.linalg.norm(p[:2]) < 1e-3:
+            mask = polylines_mask[0][i]
+            print("mask shape", mask)
+            for p, m in zip(polyline, mask):
+                if not m:
+                    print("not m")
                     continue
                 tmp_point = Point()
                 tmp_point.x = float(p[0])
                 tmp_point.y = float(p[1])
                 tmp_point.z = 0.0
                 marker.points.append(tmp_point)
-                if (np.linalg.norm(tmp_point.x) < 1e-3) and (np.linalg.norm(tmp_point.y) < 1e-3):
-                    print("start point is zero")
 
-                # if (point_dim == 9):
-                #     tmp_point_end = Point()
-                #     tmp_point_end.x = float(p[-2])
-                #     tmp_point_end.y = float(p[-1])
-                #     tmp_point_end.z = 0.0
-                #     if (np.linalg.norm(tmp_point_end.x) < 1e-3) and (np.linalg.norm(tmp_point_end.y) < 1e-3):
-                #         print("end point is zero")
-
-                #     if (np.linalg.norm(tmp_point.x - tmp_point_end.x) < 1e-1 and np.linalg.norm(tmp_point.y - tmp_point_end.y) < 1e-1):
-                #         print("start and end point are same")
-                #         marker.color.r = 0.9
-                #         marker.color.g = 0.4
-                    # marker.points.append(tmp_point_end)
+                if (point_dim == 9):
+                    tmp_point_end = Point()
+                    tmp_point_end.x = float(p[-2])
+                    tmp_point_end.y = float(p[-1])
+                    tmp_point_end.z = 0.0
+                    marker.points.append(tmp_point_end)
 
             marker_array.markers.append(marker)
 
