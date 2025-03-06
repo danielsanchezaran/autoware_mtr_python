@@ -38,6 +38,7 @@ from autoware_new_planning_msgs.msg import Trajectories, TrajectoryGeneratorInfo
 from autoware_new_planning_msgs.msg import Trajectory as NewTrajectory
 from unique_identifier_msgs.msg import UUID as RosUUID
 from autoware_mtr.dataclass.agent import _str_to_uuid_msg, OriginalInfo
+from geometry_msgs.msg import Point
 
 from autoware_perception_msgs.msg import TrackedObject
 from autoware_perception_msgs.msg import TrackedObjects
@@ -58,6 +59,8 @@ from autoware_mtr.dataclass.history import AgentHistory
 from autoware_mtr.dataclass.agent import AgentState, AgentTrajectory
 from autoware_mtr.conversion.predicted_object import to_predicted_objects
 from typing import List
+from visualization_msgs.msg import Marker
+from visualization_msgs.msg import MarkerArray
 
 
 def softmax(x: NDArray, axis: int) -> NDArray:
@@ -150,6 +153,12 @@ class MTRNode(Node):
             .double_value
         )
 
+        self._publish_debug_polyline_map = (
+            self.declare_parameter("publish_debug_polyline_map", descriptor=descriptor)
+            .get_parameter_value()
+            .bool_value
+        )
+
         lanelet_file = (
             self.declare_parameter("lanelet_file", descriptor=descriptor)
             .get_parameter_value()
@@ -203,7 +212,7 @@ class MTRNode(Node):
 
         num_polylines: int = 768
         num_points: int = 20
-        break_distance: float = 1.0
+        break_distance: float = 20.0
         center_offset: tuple[float, float] = (30.0, 0.0)
 
         self._preprocess_polyline = TargetCentricPolyline(
@@ -245,8 +254,104 @@ class MTRNode(Node):
         self._ego_trajectories_publisher = self.create_publisher(
             Trajectories, "~/output/trajectories", qos_profile)
 
+        self._debug_polylines_pub = self.create_publisher(
+            MarkerArray,
+            "/debug_polylines",
+            1,
+        )
+
         # Add a callback for parameter changes
         self.add_on_set_parameters_callback(self._parameter_callback)
+
+    def _pub_debug_polylines(self, polylines: NDArray, polylines_mask: NDArray, header: Header, ego_state: AgentState | None = None):
+
+        marker_array = MarkerArray()
+        _, num_polylines, num_points, point_dim = polylines.shape if len(
+            polylines.shape) == 4 else (1, polylines.shape[0], polylines.shape[1], polylines
+                                        .shape[2])
+
+        # # add ego translation to first 3 values
+        # polylines[..., :3] += ego_state.xyz
+        # # add ego translation to last 2 values (9 values total)
+        # polylines[..., 7:9] += ego_state.xy
+        # polylines[..., :2] = rotate_points_along_z(
+        #     points=polylines[..., 0:2].reshape(1, -1, 2),
+        #     angle=-ego_state.yaw,
+        # ).reshape(1, -1, 20, 2)
+        # polylines[..., 3:5] = rotate_points_along_z(
+        #     points=polylines[..., 3:5].reshape(1, -1, 2),
+        #     angle=-ego_state.yaw,
+        # ).reshape(1, -1, 20, 2)
+
+        for i in range(num_polylines):
+            marker = Marker()
+            marker.type = marker.LINE_STRIP
+            marker.header.stamp = header.stamp
+            marker.header.frame_id = header.frame_id
+            marker.id = i
+            marker.action = marker.ADD
+
+            marker.scale.x = 0.05
+            marker.scale.y = 0.05
+            marker.scale.z = 0.0
+            marker.color.a = 0.99
+            marker.color.r = 0.1
+            marker.color.g = 0.9
+            marker.color.b = 0.1
+
+            marker.lifetime.nanosec = 100000000
+            marker.frame_locked = True
+
+            marker.points = []
+            polyline = polylines[0][i]
+            for p in polyline:
+                if np.linalg.norm(p[:2]) < 1e-3:
+                    continue
+                tmp_point = Point()
+                tmp_point.x = float(p[0])
+                tmp_point.y = float(p[1])
+                tmp_point.z = 0.0
+
+                tmp_point_end = Point()
+                tmp_point_end.x = float(p[-2])
+                tmp_point_end.y = float(p[-1])
+                tmp_point_end.z = 0.0
+                marker.points.append(tmp_point)
+                marker.points.append(tmp_point_end)
+
+            marker_array.markers.append(marker)
+        self._debug_polylines_pub.publish(marker_array)
+
+        # for i in range(self.controller.mppi_candidates.shape[0]):
+        #     marker = Marker()
+        #     marker.type = marker.LINE_STRIP
+        #     marker.header.stamp = cmd_msg.stamp
+        #     marker.header.frame_id = "map"
+        #     marker.id = i
+        #     marker.action = marker.ADD
+
+        #     marker.scale.x = 0.05
+        #     marker.scale.y = 0.0
+        #     marker.scale.z = 0.0
+
+        #     marker.color.a = 1.0
+        #     marker.color.r = np.random.uniform()
+        #     marker.color.g = np.random.uniform()
+        #     marker.color.b = np.random.uniform()
+
+        #     marker.lifetime.nanosec = 500000000
+        #     marker.frame_locked = True
+
+        #     marker.points = []
+
+        #     for j in range(self.controller.mppi_candidates.shape[1]):
+        #         tmp_point = Point()
+        #         tmp_point.x = self.controller.mppi_candidates[i, j, 0]
+        #         tmp_point.y = self.controller.mppi_candidates[i, j, 1]
+        #         tmp_point.z = self._present_kinematic_state.pose.pose.position.z
+        #         marker.points.append(tmp_point)
+        #     marker_array.markers.append(marker)
+        # self.debug_mpc_sampling_paths_marker_array_.publish(marker_array)
 
     def _parameter_callback(self, params):
         for param in params:
@@ -302,7 +407,6 @@ class MTRNode(Node):
 
         for ego_state, info, history, concatenate, uuid in zip(ego_states, infos, histories, requires_concatenation, uuids):
             pre_processed_input = self._create_pre_processed_input(ego_state, history)
-
             # inference
             with torch.no_grad():
                 pred_scores, pred_trajs = self.model(**pre_processed_input)
@@ -337,6 +441,15 @@ class MTRNode(Node):
 
             for predicted_object in pred_objs.objects:
                 out_objects.objects.append(predicted_object)
+
+            if (self._publish_debug_polyline_map):
+                if np.linalg.norm(ego_state.xy - true_ego_state.xy) > 1e-3:
+                    continue
+                header_map = Header()
+                header_map .stamp = self.get_clock().now().to_msg()
+                header_map .frame_id = "base_link"
+                self._pub_debug_polylines(pre_processed_input["map_polylines"].cpu().detach().numpy(),
+                                          pre_processed_input["map_polylines_mask"].cpu().detach().numpy(), header_map)
         return out_trajectories, out_objects
 
     def _generate_steering_bias(self, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, yaw_bias: float, bias_left: bool = True, bias_right: bool = True):
@@ -451,6 +564,11 @@ class MTRNode(Node):
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         self._publisher.publish(pred_objs)
         self._last_ego = current_ego
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "map"
+        # self._pub_debug_polylines(self._batch_polylines,
+        #                           self._batch_polylines_mask, header)
 
     def _postprocess(
         self,
@@ -578,12 +696,8 @@ class MTRNode(Node):
         Returns:
 
         """
-        if self._batch_polylines is None or self._batch_polylines_mask is None:
-            polyline_info, self._batch_polylines, self._batch_polylines_mask = self._preprocess_polyline(
-                static_map=self._awml_static_map, target_state=current_ego, num_target=1, batch_polylines=None, batch_polylines_mask=None)
-        else:
-            polyline_info, _, __ = self._preprocess_polyline(
-                static_map=self._awml_static_map, target_state=current_ego, num_target=1, batch_polylines=self._batch_polylines, batch_polylines_mask=self._batch_polylines_mask)
+        polyline_info, self._batch_polylines, self._batch_polylines_mask = self._preprocess_polyline(
+            static_map=self._awml_static_map, target_state=current_ego, num_target=1, batch_polylines=self._batch_polylines, batch_polylines_mask=self._batch_polylines_mask)
 
         sorted_histories = order_from_closest_to_furthest(
             current_ego, history.histories.values())
