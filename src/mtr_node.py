@@ -83,7 +83,6 @@ class MTRNode(Node):
         super().__init__("mtr_python_node")
 
         # subscribers
-
         qos_profile_2 = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -297,22 +296,20 @@ class MTRNode(Node):
             marker.points = []
             polyline = polylines[0][i] if len(polylines.shape) == 4 else polylines[i]
             mask = polylines_mask[0][i]
-            print("mask shape", mask)
             for p, m in zip(polyline, mask):
                 if not m:
-                    print("not m")
                     continue
                 tmp_point = Point()
                 tmp_point.x = float(p[0])
                 tmp_point.y = float(p[1])
-                tmp_point.z = 0.0
+                tmp_point.z = 0.2
                 marker.points.append(tmp_point)
 
                 if (point_dim == 9):
                     tmp_point_end = Point()
                     tmp_point_end.x = float(p[-2])
                     tmp_point_end.y = float(p[-1])
-                    tmp_point_end.z = 0.0
+                    tmp_point_end.z = 0.2
                     marker.points.append(tmp_point_end)
 
             marker_array.markers.append(marker)
