@@ -153,6 +153,12 @@ class MTRNode(Node):
             .double_value
         )
 
+        self._publish_debug_polyline_batch = (
+            self.declare_parameter("publish_debug_polyline_batch", descriptor=descriptor)
+            .get_parameter_value()
+            .bool_value
+        )
+
         self._publish_debug_polyline_map = (
             self.declare_parameter("publish_debug_polyline_map", descriptor=descriptor)
             .get_parameter_value()
@@ -263,7 +269,7 @@ class MTRNode(Node):
         # Add a callback for parameter changes
         self.add_on_set_parameters_callback(self._parameter_callback)
 
-    def _pub_debug_polylines(self, polylines: NDArray, polylines_mask: NDArray, header: Header, ego_state: AgentState | None = None):
+    def _pub_debug_polylines(self, polylines: NDArray, polylines_mask: NDArray, header: Header, ego_state: AgentState | None = None, polyline_centers: NDArray | None = None):
 
         marker_array = MarkerArray()
         _, num_polylines, num_points, point_dim = polylines.shape if len(
@@ -298,15 +304,52 @@ class MTRNode(Node):
                 tmp_point.y = float(p[1])
                 tmp_point.z = 0.0
                 marker.points.append(tmp_point)
+                if (np.linalg.norm(tmp_point.x) < 1e-3) and (np.linalg.norm(tmp_point.y) < 1e-3):
+                    print("start point is zero")
 
-                if (point_dim == 9):
-                    tmp_point_end = Point()
-                    tmp_point_end.x = float(p[-2])
-                    tmp_point_end.y = float(p[-1])
-                    tmp_point_end.z = 0.0
-                    marker.points.append(tmp_point_end)
+                # if (point_dim == 9):
+                #     tmp_point_end = Point()
+                #     tmp_point_end.x = float(p[-2])
+                #     tmp_point_end.y = float(p[-1])
+                #     tmp_point_end.z = 0.0
+                #     if (np.linalg.norm(tmp_point_end.x) < 1e-3) and (np.linalg.norm(tmp_point_end.y) < 1e-3):
+                #         print("end point is zero")
+
+                #     if (np.linalg.norm(tmp_point.x - tmp_point_end.x) < 1e-1 and np.linalg.norm(tmp_point.y - tmp_point_end.y) < 1e-1):
+                #         print("start and end point are same")
+                #         marker.color.r = 0.9
+                #         marker.color.g = 0.4
+                    # marker.points.append(tmp_point_end)
 
             marker_array.markers.append(marker)
+
+        if (polyline_centers is not None):
+            _, num_polylines, center_dim = polyline_centers.shape
+            for i in range(num_polylines):
+                marker = Marker()
+                marker.type = marker.SPHERE
+                marker.header.stamp = header.stamp
+                marker.header.frame_id = header.frame_id
+                marker.id = i + num_polylines
+                marker.action = marker.ADD
+
+                marker.scale.x = 0.5
+                marker.scale.y = 0.5
+                marker.scale.z = 0.5
+                marker.color.a = 0.99
+                marker.color.r = 0.9
+                marker.color.g = 0.1
+                marker.color.b = 0.1
+
+                marker.lifetime.nanosec = 100000000
+                marker.frame_locked = True
+
+                marker.pose.position.x = float(polyline_centers[0][i][0])
+                marker.pose.position.y = float(polyline_centers[0][i][1])
+                marker.pose.position.z = 0.0
+
+                marker_array.markers.append(marker)
+
         self._debug_polylines_pub.publish(marker_array)
 
     def _parameter_callback(self, params):
@@ -405,7 +448,7 @@ class MTRNode(Node):
                 header_map .stamp = self.get_clock().now().to_msg()
                 header_map .frame_id = "base_link"
                 self._pub_debug_polylines(pre_processed_input["map_polylines"].cpu().detach().numpy(),
-                                          pre_processed_input["map_polylines_mask"].cpu().detach().numpy(), header_map)
+                                          pre_processed_input["map_polylines_mask"].cpu().detach().numpy(), header_map, None, pre_processed_input["map_polylines_center"].cpu().detach().numpy())
         return out_trajectories, out_objects
 
     def _generate_steering_bias(self, base_agent_state: AgentState, base_agent_info: OriginalInfo, base_agent_history: AgentHistory, yaw_bias: float, bias_left: bool = True, bias_right: bool = True):
@@ -520,11 +563,12 @@ class MTRNode(Node):
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         self._publisher.publish(pred_objs)
         self._last_ego = current_ego
-        header = Header()
-        header.stamp = self.get_clock().now().to_msg()
-        header.frame_id = "map"
-        # self._pub_debug_polylines(self._batch_polylines,
-        #                           self._batch_polylines_mask, header)
+        if self._publish_debug_polyline_batch:
+            header = Header()
+            header.stamp = self.get_clock().now().to_msg()
+            header.frame_id = "map"
+            self._pub_debug_polylines(self._batch_polylines,
+                                      self._batch_polylines_mask, header)
 
     def _postprocess(
         self,
