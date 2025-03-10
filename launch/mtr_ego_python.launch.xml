@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
+  <arg name="map_path" description="point cloud and lanelet2 map directory path"/>
+  
   <arg name="param_path" default="$(find-pkg-share autoware_mtr_python)/config/mtr_ego_node.param.yaml"/>
   <arg name="data_path" default="$(find-pkg-share autoware_mtr_python)/data"/>
 
@@ -11,7 +13,7 @@
   <arg name="output/trajectories" default="mtr/trajectories"/>
 
 
-  <arg name="lanelet_file" default="$(find-pkg-share autoware_mtr_python)/data/odaiba.lanelet2_map.osm"/>
+  <arg name="lanelet_file" default="$(var map_path)/lanelet2_map.osm"/>
   <arg name="intention_point_file" default="$(find-pkg-share autoware_mtr_python)/data/cluster64_dict.pkl"/>
   <arg name="build_only" default="false"/>
 
