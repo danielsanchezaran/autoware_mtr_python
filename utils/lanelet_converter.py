@@ -4,6 +4,7 @@ import logging
 import sys
 
 import numpy as np
+from scipy.interpolate import interp1d
 
 try:
     import lanelet2
@@ -18,7 +19,7 @@ except ImportError as e:
 from awml_pred.common import uuid
 from awml_pred.dataclass import AWMLStaticMap, BoundarySegment, CrosswalkSegment, LaneSegment, Polyline
 from awml_pred.datatype import BoundaryType, T4Lane, T4Polyline, T4RoadEdge, T4RoadLine
-
+from awml_pred.typing import NDArray
 # cspell: ignore MGRS
 
 
@@ -188,7 +189,7 @@ def _get_boundary_segment(linestring: lanelet2.core.LineString3d) -> BoundarySeg
 
     """
     boundary_type = _get_boundary_type(linestring)
-    waypoints = np.array([(line.x, line.y, line.z) for line in linestring])
+    waypoints = _interpolate_lane(np.array([(line.x, line.y, line.z) for line in linestring]))
     global_type = T4Polyline.from_str(boundary_type.as_str())
     polyline = Polyline(polyline_type=global_type, waypoints=waypoints)
     return BoundarySegment(linestring.id, boundary_type, polyline)
@@ -269,6 +270,36 @@ def _get_left_and_right_neighbor_ids(
     return left_neighbor_id, right_neighbor_id
 
 
+def _interpolate_lane(waypoints: NDArray):
+    # Compute cumulative distances (arc length)
+    distances = np.zeros(len(waypoints))
+    for i in range(1, len(waypoints)):
+        distances[i] = distances[i - 1] + np.linalg.norm(waypoints[i] - waypoints[i - 1])
+
+    # Generate new arc lengths with fixed spacing (0.5 meters)
+    new_distances = np.arange(0, distances[-1], 0.5)
+    new_distances = np.append(new_distances, distances[-1])  # Ensure last point is included
+
+    # Interpolate x, y, z separately
+    interp_x = interp1d(distances, waypoints[:, 0], kind="linear")
+    interp_y = interp1d(distances, waypoints[:, 1], kind="linear")
+    interp_z = interp1d(distances, waypoints[:, 2], kind="linear")
+
+    # Compute new waypoints
+    new_waypoints = np.vstack((interp_x(new_distances), interp_y(
+        new_distances), interp_z(new_distances))).T
+
+    # Ensure the first and last points remain unchanged
+    # Ensure the first waypoint is exactly the same without duplication
+    if not np.allclose(new_waypoints[0], waypoints[0]):
+        new_waypoints = np.vstack((waypoints[0], new_waypoints))
+
+    # Ensure the last waypoint is exactly the same without duplication
+    if not np.allclose(new_waypoints[-1], waypoints[-1]):
+        new_waypoints = np.vstack((new_waypoints, waypoints[-1]))
+    return new_waypoints
+
+
 def convert_lanelet(filename: str) -> AWMLStaticMap:
     """Convert lanelet (.osm) to map info.
 
@@ -303,11 +334,13 @@ def convert_lanelet(filename: str) -> AWMLStaticMap:
         if T4Lane.contains(lanelet_subtype) and lanelet_subtype != "walkway":
             # lane
             lane_type = T4Lane.from_str(lanelet_subtype)
-            lane_waypoints = np.array([(line.x, line.y, line.z) for line in lanelet.centerline])
+            lane_waypoints = _interpolate_lane(
+                np.array([(line.x, line.y, line.z) for line in lanelet.centerline]))
             global_lane_type = T4Polyline.from_str(lanelet_subtype)
             lane_polyline = Polyline(polyline_type=global_lane_type, waypoints=lane_waypoints)
             is_intersection = _is_intersection(lanelet)
-            left_neighbor_ids, right_neighbor_ids = _get_left_and_right_neighbor_ids(lanelet, routing_graph)
+            left_neighbor_ids, right_neighbor_ids = _get_left_and_right_neighbor_ids(
+                lanelet, routing_graph)
             speed_limit_mph = _get_speed_limit_mph(lanelet)
 
             # road line or road edge
@@ -328,7 +361,8 @@ def convert_lanelet(filename: str) -> AWMLStaticMap:
                 speed_limit_mph=speed_limit_mph,
             )
         elif lanelet_subtype == "crosswalk":
-            waypoints = np.array([(poly.x, poly.y, poly.z) for poly in lanelet.polygon3d()])
+            waypoints = _interpolate_lane(
+                np.array([(poly.x, poly.y, poly.z) for poly in lanelet.polygon3d()]))
             polygon = Polyline(polyline_type=T4Polyline.CROSSWALK, waypoints=waypoints)
             crosswalk_segments[lanelet.id] = CrosswalkSegment(lanelet.id, polygon)
         else:
