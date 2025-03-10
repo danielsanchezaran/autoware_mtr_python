@@ -12,5 +12,6 @@ install/*
 log/*
 *__pycache__
 *.so
+projects/MTR/mtr/ops/cuda_ops.so
 autoware_mtr_python.egg-info/
 projects/MTR/build/temp.linux-x86_64-3.10/
