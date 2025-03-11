@@ -1,8 +1,9 @@
-from awml_pred.datatype.base import ContextType
+from awml_pred.datatype.context import ContextType
 
 from .base import BoundaryType, LaneType, PolylineType, SignalType
 
-__all__ = ("WaymoPolyline", "WaymoLane", "WaymoRoadLine", "WaymoRoadEdge", "WaymoRoadEdge", "WaymoSignal")
+__all__ = ("WaymoPolyline", "WaymoLane", "WaymoRoadLine",
+           "WaymoRoadEdge", "WaymoRoadEdge", "WaymoSignal")
 
 
 class WaymoPolyline(PolylineType):

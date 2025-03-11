@@ -1,8 +1,18 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from dataclasses import asdict
 from enum import Enum
 from typing import Any
+import numpy as np
 
 __all__ = ("custom_as_dict",)
+
+
+def to_np_f32(x):
+    """Convert an array like object to a numpy float32 array."""
+    return np.array(x, dtype=np.float32)
 
 
 def custom_as_dict(data: Any) -> dict:

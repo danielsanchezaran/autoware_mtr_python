@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import logging
 from abc import abstractmethod
-from enum import Enum, IntEnum
+from enum import IntEnum
+from typing import TYPE_CHECKING, TypeVar
 
 from typing_extensions import Self
 
-__all__ = ("BaseType", "ContextType", "LabelType")
+if TYPE_CHECKING:
+    from .context import ContextType
+
+__all__ = ["LabelTypeLike"]
 
 
-class BaseType(IntEnum):
-    """Base of types.
+class LabelBaseType(IntEnum):
+    """Base of label types.
 
     All types must have the following enum format.
     * TYPE_NAME = TYPE_ID <int>
@@ -78,46 +81,29 @@ class BaseType(IntEnum):
         return name.upper() in cls.__members__
 
     @classmethod
-    def to_dict(cls) -> dict[str, int]:
-        """Convert members to dict formatting as `{name: value}`.
+    def encode(cls, object_type: LabelTypeLike) -> list[int]:
+        """Return One-hot encoding of the specified type ID.
 
-        Returns
+        Args:
+        ----
+            object_type (LabelTypeLike): Object type.
+
+        Returns:
         -------
-            dict[str, int]: Converted dict.
+            list[int]: One-hot encoding.
 
         """
-        return {name: item.value for name, item in cls.__members__.items()}
+        onehot = [0] * len(cls)
+        onehot[object_type.value] = 1
+        return onehot
 
-    @classmethod
-    def get_static_items(cls) -> list[Self]:
-        """Return members that `is_dynamic()=False`.
-
-        Returns
-        -------
-            list[Self]: List of static items.
-
-        """
-        return [item for item in cls if not item.is_dynamic()]
-
-    @classmethod
-    def get_dynamic_items(cls) -> list[Self]:
-        """Return members that `is_dynamic()=True`.
-
-        Returns
-        -------
-            list[Self]: List of dynamic items.
-
-        """
-        return [item for item in cls if item.is_dynamic()]
-
-    @staticmethod
     @abstractmethod
-    def to_context(*, as_str: bool = False) -> ContextType | str:
+    def to_context(self, *, as_str: bool = False) -> ContextType | str:
         """Convert the enum member to `ContextType`.
 
         Args:
         ----
-            as_str (bool, optional): Whether to return as str. Defaults to False.
+            as_str (bool, optional): Whether to return as str.
 
         Returns:
         -------
@@ -125,98 +111,5 @@ class BaseType(IntEnum):
 
         """
 
-    @abstractmethod
-    def is_dynamic(self) -> bool:
-        """Whether the item is dynamic.
 
-        Returns
-        -------
-            bool: Return True if dynamic is.
-
-        """
-
-
-class ContextType(str, Enum):
-    """Context types."""
-
-    # Global context
-    AGENT = "AGENT"
-    POLYLINE = "POLYLINE"
-
-    # Local context
-    EGO = "EGO"
-    FOCAL_AGENT = "FOCAL_AGENT"
-    OTHER_AGENT = "OTHER_AGENT"
-
-    LANE = "LANE"  # = CENTERLINE
-    ROADLINE = "ROADLINE"
-    ROADEDGE = "ROADEDGE"
-    CROSSWALK = "CROSSWALK"
-    SIGNAL = "SIGNAL"
-
-    # Catch all contexts
-    UNKNOWN = "UNKNOWN"
-
-    @classmethod
-    def from_str(cls, name: str) -> ContextType:
-        """Construct the member from name.
-
-        Args:
-        ----
-            name (str): Name of member in str.
-
-        Returns:
-        -------
-            ContextType: Constructed member.
-
-        """
-        name = name.upper()
-        if name not in cls.__members__:
-            msg = f"{name} is not in enum members of {cls.__name__}, UNKNOWN is used."
-            logging.warning(msg)
-            return cls.UNKNOWN
-        else:
-            return cls.__members__[name]
-
-
-class LabelType(str, Enum):
-    """Label types."""
-
-    # Agents
-    EGO = "EGO"
-    VEHICLE = "VEHICLE"
-    LARGE_VEHICLE = "LARGE_VEHICLE"
-    PEDESTRIAN = "PEDESTRIAN"
-    MOTORCYCLIST = "MOTORCYCLIST"
-    CYCLIST = "CYCLIST"
-
-    # Polylines
-    LANE = "LANE"  # = CENTERLINE
-    ROADLINE = "ROADLINE"
-    ROADEDGE = "ROADEDGE"
-    CROSSWALK = "CROSSWALK"
-    SIGNAL = "SIGNAL"
-
-    # Catch all labels
-    UNKNOWN = "UNKNOWN"
-
-    @classmethod
-    def from_str(cls, name: str) -> LabelType:
-        """Construct the member from name.
-
-        Args:
-        ----
-            name (str): Name of member in str.
-
-        Returns:
-        -------
-            LabelType: Constructed member.
-
-        """
-        name = name.upper()
-        if name not in cls.__members__:
-            msg = f"{name} is not in enum members of {cls.__members__}, UNKNOWN is used."
-            logging.warning(msg)
-            return cls.UNKNOWN
-        else:
-            return cls.__members__[name]
+LabelTypeLike = TypeVar("LabelTypeLike", bound=LabelBaseType)

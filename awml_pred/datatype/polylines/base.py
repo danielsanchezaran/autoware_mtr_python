@@ -1,11 +1,12 @@
 from abc import abstractmethod
 
-from awml_pred.datatype.base import BaseType, ContextType
+from awml_pred.datatype.base import LabelBaseType
+from awml_pred.datatype.context import ContextType
 
 __all__ = ("PolylineType", "LaneType", "BoundaryType", "SignalType")
 
 
-class PolylineType(BaseType):
+class PolylineType(LabelBaseType):
     """A base enum of Polyline."""
 
     def is_dynamic(self) -> bool:
@@ -35,7 +36,7 @@ class PolylineType(BaseType):
         return ctx.value if as_str else ctx
 
 
-class LaneType(BaseType):
+class LaneType(LabelBaseType):
     """A base enum of Lane."""
 
     def is_dynamic(self) -> bool:
@@ -75,7 +76,7 @@ class LaneType(BaseType):
         return ctx.value if as_str else ctx
 
 
-class BoundaryType(BaseType):
+class BoundaryType(LabelBaseType):
     """A base enum of RoadLine and RoadEdge."""
 
     def is_dynamic(self) -> bool:
@@ -109,7 +110,7 @@ class BoundaryType(BaseType):
         """
 
 
-class SignalType(BaseType):
+class SignalType(LabelBaseType):
     """A base enum of Signal."""
 
     def is_dynamic(self) -> bool:

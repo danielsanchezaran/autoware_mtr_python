@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
+from attr import define, field
+
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from typing_extensions import Self
-
-from awml_pred.datatype import BoundaryType, LaneType
 
 from .polyline import Polyline
 
@@ -33,7 +33,7 @@ class AWMLStaticMap:
     id: str
     lane_segments: dict[int, LaneSegment]
     crosswalk_segments: dict[int, CrosswalkSegment]
-    boundary_segments: dict[int, BoundarySegment] = field(default_factory=dict)
+    boundary_segments: dict[int, BoundarySegment] = field(factory=dict)
 
     def __post_init__(self) -> None:
         assert all(
@@ -159,14 +159,17 @@ class AWMLStaticMap:
         return np.concatenate(all_polyline, axis=0, dtype=np.float32) if as_array else all_polyline
 
 
-@dataclass
+def _to_boundary_segment(x: list[dict | BoundarySegment]) -> list[BoundarySegment]:
+    return [BoundarySegment.from_dict(v) if isinstance(v, dict) else v for v in x]
+
+
+@define
 class LaneSegment:
     """Represents a lane segment.
 
     Attributes
     ----------
         id (int): Unique ID associated with this lane.
-        lane_type (LaneType): `LaneType` instance.
         polyline (Polyline): `Polyline` instance.
         is_intersection (bool): Flag indicating if this lane is intersection.
         left_boundaries (list[BoundarySegment]): List of `BoundarySegment` instances.
@@ -178,27 +181,28 @@ class LaneSegment:
     """
 
     id: int
-    lane_type: LaneType
-    polyline: Polyline
+    polyline: Polyline = field(converter=lambda x: Polyline.from_dict(x)
+                               if isinstance(x, dict) else x)
     is_intersection: bool
-    left_boundaries: list[BoundarySegment]
-    right_boundaries: list[BoundarySegment]
-    left_neighbor_ids: list[int]
-    right_neighbor_ids: list[int]
-    speed_limit_mph: float | None = None
+    left_boundaries: list[BoundarySegment] = field(converter=_to_boundary_segment, factory=list)
+    right_boundaries: list[BoundarySegment] = field(converter=_to_boundary_segment, factory=list)
+    left_neighbor_ids: list[int] = field(factory=list)
+    right_neighbor_ids: list[int] = field(factory=list)
+    speed_limit_mph: float | None = field(default=None)
 
-    def __post_init__(self) -> None:
-        assert isinstance(self.lane_type, LaneType), "Expected LaneType."
-        assert isinstance(self.polyline, Polyline), "Expected Polyline."
-        assert isinstance(self.left_boundaries, list) and all(
-            isinstance(b, BoundarySegment) for b in self.left_boundaries
-        ), "Expected list of BoundarySegment for left."
-        assert isinstance(self.right_boundaries, list) and all(
-            isinstance(b, BoundarySegment) for b in self.right_boundaries
-        ), "Expected list of BoundarySegment for right."
+    @property
+    def lane_type(self) -> MapType:
+        """Return the type of the lane.
+
+        Returns
+        -------
+            MapType: Lane type.
+
+        """
+        return self.polyline.polyline_type
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> LaneSegment:
+    def from_dict(cls, data: dict[str, Any]) -> Self:
         """Construct a instance from a dict data.
 
         Args:
@@ -210,27 +214,7 @@ class LaneSegment:
             LaneSegment: Constructed instance.
 
         """
-        lane_id = data["id"]
-        lane_type = data["lane_type"]
-        polyline = Polyline.from_dict(data["polyline"])
-        is_intersection = data["is_intersection"]
-        left_boundaries = [BoundarySegment.from_dict(d) for d in data["left_boundaries"]]
-        right_boundaries = [BoundarySegment.from_dict(d) for d in data["right_boundaries"]]
-        left_neighbor_ids = data["left_neighbor_ids"]
-        right_neighbor_ids = data["right_neighbor_ids"]
-        speed_limit_mph = data["speed_limit_mph"]
-
-        return cls(
-            id=lane_id,
-            lane_type=lane_type,
-            polyline=polyline,
-            is_intersection=is_intersection,
-            left_boundaries=left_boundaries,
-            right_boundaries=right_boundaries,
-            left_neighbor_ids=left_neighbor_ids,
-            right_neighbor_ids=right_neighbor_ids,
-            speed_limit_mph=speed_limit_mph,
-        )
+        return cls(**data)
 
     def is_drivable(self) -> bool:
         """Whether the lane is allowed to drive by car like vehicle.
@@ -241,16 +225,6 @@ class LaneSegment:
 
         """
         return self.lane_type.is_drivable()
-
-    def as_dict(self) -> dict:
-        """Convert the instance to a dict.
-
-        Returns
-        -------
-            dict: Converted data.
-
-        """
-        return asdict(self)
 
     def as_array(self, *, full: bool = False, as_3d: bool = True) -> NDArrayF32:
         """Return polyline containing all points on the road segment.
@@ -364,11 +338,9 @@ class BoundarySegment:
     """
 
     id: int
-    boundary_type: BoundaryType
     polyline: Polyline
 
     def __post_init__(self) -> None:
-        assert isinstance(self.boundary_type, BoundaryType), "Expected BoundaryType."
         assert isinstance(self.polyline, Polyline), "Expected Polyline."
 
     @classmethod
@@ -384,10 +356,7 @@ class BoundarySegment:
             BoundarySegment: Constructed instance.
 
         """
-        boundary_id: int = data["id"]
-        boundary_type: BoundaryType = data["boundary_type"]
-        polyline = Polyline.from_dict(data["polyline"])
-        return cls(boundary_id, boundary_type, polyline)
+        return cls(**data)
 
     def as_dict(self) -> dict:
         """Convert the instance to a dict.
