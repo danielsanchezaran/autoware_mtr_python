@@ -49,6 +49,7 @@ from awml_pred.common import Config, load_checkpoint
 from awml_pred.models import build_model
 from awml_pred.deploy.apis.torch2onnx import _load_inputs
 from utils.lanelet_converter import convert_lanelet
+from utils.constant import MAP_TYPE_COLORS
 from utils.load import LoadIntentionPoint
 from autoware_mtr.conversion.ego import from_odometry, from_trajectory_point
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
@@ -287,10 +288,6 @@ class MTRNode(Node):
             marker.scale.x = 0.05
             marker.scale.y = 0.05
             marker.scale.z = 0.0
-            marker.color.a = 0.99
-            marker.color.r = 0.1
-            marker.color.g = 0.9
-            marker.color.b = 0.1
 
             marker.lifetime.nanosec = 100000000
             marker.frame_locked = True
@@ -301,6 +298,8 @@ class MTRNode(Node):
             for p, m in zip(polyline, mask):
                 if not m:
                     continue
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = MAP_TYPE_COLORS[int(
+                    p[-3])]
                 tmp_point = Point()
                 tmp_point.x = float(p[0])
                 tmp_point.y = float(p[1])
