@@ -101,12 +101,14 @@ class MTRNode(Node):
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self._subscription = self.create_subscription(
+        self._odometry_subscription = self.create_subscription(
             Odometry,
             "~/input/ego",
-            self._callback,
+            self._odometry_callback,
             qos_profile,
         )
+
+        self._timer = self.create_timer(0.1, self._callback)
 
         # ROS parameters
         descriptor = ParameterDescriptor(dynamic_typing=True)
@@ -199,6 +201,7 @@ class MTRNode(Node):
         self._history = AgentHistory(max_length=num_timestamp)
         self._future_propagated_history = AgentHistory(max_length=num_timestamp)
         self._awml_static_map: AWMLStaticMap = convert_lanelet(lanelet_file)
+        self.current_ego, self.current_ego_info = None, None
 
         intention_point_loader: LoadIntentionPoint = LoadIntentionPoint(
             intention_point_file, labels)
@@ -351,14 +354,6 @@ class MTRNode(Node):
             0, num_target, dtype=torch.int32).cuda()
         return pre_processed_input
 
-    def _previous_trajectory_callback(self, msg: Trajectory) -> None:
-        self._prev_trajectory = msg
-
-    def _tracked_objects_callback(self, msg: TrackedObjects) -> None:
-        timestamp = timestamp2ms(msg.header)
-        states, infos = from_tracked_objects(msg)
-        self._history.update(states, infos)
-
     def _do_predictions(self, true_ego_state: AgentState, ego_states: List[AgentState], infos: List[OriginalInfo], histories: List[AgentHistory], requires_concatenation: List[bool], uuids: List[RosUUID]):
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
@@ -478,28 +473,39 @@ class MTRNode(Node):
             biased_histories.append(biased_history)
         return biased_states, biased_infos, biased_histories, uuids
 
-    def _callback(self, msg: Odometry) -> None:
-        # remove invalid ancient agent history
+    def _previous_trajectory_callback(self, msg: Trajectory) -> None:
+        self._prev_trajectory = msg
+
+    def _tracked_objects_callback(self, msg: TrackedObjects) -> None:
+        timestamp = timestamp2ms(msg.header)
+        states, infos = from_tracked_objects(msg)
+        self._history.update(states, infos)
+
+    def _odometry_callback(self, msg: Odometry) -> None:
         timestamp = timestamp2ms(msg.header)
         self._history.remove_invalid(timestamp, self._timestamp_threshold)
 
         # update agent history
-        current_ego, info = from_odometry(
+        self.current_ego, self.current_ego_info = from_odometry(
             msg,
             uuid=self._ego_uuid,
             label_id=AgentLabel.VEHICLE,
             size=self.ego_dimensions,
         )
 
-        self._history.update_state(current_ego, info)
+    def _callback(self) -> None:
+        # remove invalid ancient agent history
+        if self.current_ego is None or self.current_ego_info is None:
+            return
 
+        self._history.update_state(self.current_ego, self.current_ego_info)
         if self.count < self._num_timestamps:
             self.count = self.count + 1
             return
 
-        true_ego_state = deepcopy(current_ego)
-        ego_states = [current_ego]
-        infos = [info]
+        true_ego_state = deepcopy(self.current_ego)
+        ego_states = [self.current_ego]
+        infos = [self.current_ego_info]
         histories = [self._history]
         requires_concatenation = [False]
         uuids = [self._ego_uuid]
@@ -531,7 +537,6 @@ class MTRNode(Node):
 
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         self._publisher.publish(pred_objs)
-        self._last_ego = current_ego
         if self._publish_debug_polyline_batch:
             header = Header()
             header.stamp = self.get_clock().now().to_msg()
