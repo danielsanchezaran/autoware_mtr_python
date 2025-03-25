@@ -44,7 +44,6 @@ from geometry_msgs.msg import Point
 from autoware_perception_msgs.msg import TrackedObject
 from autoware_perception_msgs.msg import TrackedObjects
 
-from awml_pred.dataclass import AWMLStaticMap
 from awml_pred.common import Config, load_checkpoint
 from awml_pred.models import build_model
 from utils.lanelet_converter import convert_lanelet
@@ -54,6 +53,7 @@ from autoware_mtr.conversion.ego import from_odometry, from_trajectory_point
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
 from autoware_mtr.conversion.misc import timestamp2ms, yaw_from_quaternion
 from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectories, _yaw_to_quaternion
+from autoware_mtr.dataclass.static_map import AWMLStaticMap
 from autoware_mtr.datatype import AgentLabel
 from autoware_mtr.geometry import rotate_along_z
 from autoware_mtr.dataclass.history import AgentHistory

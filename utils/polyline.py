@@ -11,7 +11,7 @@ import time
 
 
 if TYPE_CHECKING:
-    from awml_pred.dataclass import AWMLAgentScenario, AWMLStaticMap, Trajectory
+    from autoware_mtr.dataclass.static_map import AWMLStaticMap
     from awml_pred.typing import NDArrayBool, NDArrayF32, NDArrayI64
 
 __all__ = ("TargetCentricPolyline",)
@@ -26,7 +26,6 @@ class TargetCentricPolyline:
 
     Required Keys:
     --------------
-        scenario (AWMLAgentScenario): `AWMLAgentScenario` instance.
         static_map (AWMLStaticMap): `AWMLStaticMap` instance.
         predict_all_agents (bool): Whether to predict all agents.
 

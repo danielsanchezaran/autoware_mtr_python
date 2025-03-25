@@ -17,7 +17,7 @@ except ImportError as e:
     sys.exit(1)
 
 from awml_pred.common import uuid
-from awml_pred.dataclass import AWMLStaticMap, BoundarySegment, CrosswalkSegment, LaneSegment, Polyline
+from autoware_mtr.dataclass.static_map import AWMLStaticMap, BoundarySegment, CrosswalkSegment, LaneSegment, Polyline
 from awml_pred.datatype import MapType
 from .constant import MAP_TYPE_MAPPING, T4_LANE, T4_ROADEDGE, T4_ROADLINE
 

@@ -1,33 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import ClassVar
-from typing import Final
+from typing import TYPE_CHECKING, ClassVar
 
-from autoware_mtr.datatype import PolylineLabel
 import numpy as np
-from numpy.typing import NDArray
+# from dataclasses import field
+from attr import define, field
+from typing_extensions import Self
 
-__all__ = ("Polyline",)
+from awml_pred.datatype import MapType
+
+from awml_pred.dataclass.utils import to_np_f32
+
+if TYPE_CHECKING:
+    from awml_pred.typing import NDArray, NDArrayF32
+
+__all__ = ["Polyline"]
 
 
-# TODO(ktro2828): Type definition
-
-
-@dataclass
+@define
 class Polyline:
-    """
-    A dataclass of Polyline.
+    """A dataclass of Polyline.
 
     Attributes
     ----------
-        polyline_type (PolylineType): `PolylineType` instance.
-        waypoints (NDArray): Waypoints of polyline.
+        polyline_type (MapType): Type of polyline.
+        waypoints (NDArrayF32): Waypoints of polyline.
 
     """
 
-    polyline_type: PolylineLabel
-    waypoints: NDArray
+    polyline_type: MapType = field()
+    waypoints: NDArrayF32 = field(converter=to_np_f32)
 
     # NOTE: For the 1DArray indices must be a list.
     XYZ_IDX: ClassVar[list[int]] = [0, 1, 2]
@@ -35,19 +37,34 @@ class Polyline:
     FULL_DIM3D: ClassVar[int] = 7
     FULL_DIM2D: ClassVar[int] = 5
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.waypoints, np.ndarray):
-            self.waypoints = np.array(self.waypoints, dtype=np.float32)
-        assert isinstance(self.waypoints, np.ndarray)
-        min_ndim: Final[int] = 1
-        point_dim: Final[int] = 3
-        assert self.waypoints.ndim > min_ndim and self.waypoints.shape[1] == point_dim
-        assert isinstance(self.polyline_type, PolylineLabel)
+    @polyline_type.validator
+    def _check_type(self, attr, value) -> None:
+        if not isinstance(value, MapType):
+            raise TypeError(f"Unexpected type of {attr.name}: {type(value)}")
+
+    @waypoints.validator
+    def _check_dim(self, attribute, value) -> None:
+        if value.ndim < 1 or value.shape[1] != 3:
+            raise ValueError(f"Unexpected {attribute.name} dimensions.")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        """Construct an instance from dict data.
+
+        Args:
+        ----
+            data (dict): Dict data of `Polyline`.
+
+        Returns:
+        -------
+            Polyline: Constructed instance.
+
+        """
+        return cls(**data)
 
     @property
     def xyz(self) -> NDArray:
-        """
-        Return 3D positions.
+        """Return 3D positions.
 
         Returns
         -------
@@ -62,8 +79,7 @@ class Polyline:
 
     @property
     def xy(self) -> NDArray:
-        """
-        Return 2D positions.
+        """Return 2D positions.
 
         Returns
         -------
@@ -78,8 +94,7 @@ class Polyline:
 
     @property
     def dxyz(self) -> NDArray:
-        """
-        Return 3D normalized directions. The first element always becomes (0, 0, 0).
+        """Return 3D normalized directions. The first element always becomes (0, 0, 0).
 
         Returns
         -------
@@ -89,14 +104,12 @@ class Polyline:
         if self.is_empty():
             return np.empty((0, 3), dtype=np.float32)
         diff = np.diff(self.xyz, axis=0, prepend=self.xyz[0].reshape(-1, 3))
-        norm = np.linalg.norm(diff, axis=-1, keepdims=True)
-        zero: Final[float] = 0.0
-        return np.divide(diff, norm, where=(diff != zero) & (norm != zero))
+        norm = np.clip(np.linalg.norm(diff, axis=-1, keepdims=True), a_min=1e-6, a_max=1e9)
+        return np.divide(diff, norm)
 
     @property
     def dxy(self) -> NDArray:
-        """
-        Return 2D normalized directions. The first element always becomes (0, 0).
+        """Return 2D normalized directions. The first element always becomes (0, 0).
 
         Returns
         -------
@@ -106,40 +119,14 @@ class Polyline:
         if self.is_empty():
             return np.empty((0, 2), dtype=np.float32)
         diff = np.diff(self.xy, axis=0, prepend=self.xy[0].reshape(-1, 2))
-        norm = np.linalg.norm(diff, axis=-1, keepdims=True)
-        zero: Final[float] = 0.0
-        return np.divide(diff, norm, where=(diff != zero) & (norm != zero))
-
-    @property
-    def type_id(self) -> int:
-        """
-        Return the type ID in `int`.
-
-        Returns
-        -------
-            int: Type ID.
-
-        """
-        return self.polyline_type.value
-
-    @property
-    def type_str(self) -> str:
-        """
-        Return the type in `str`.
-
-        Returns
-        -------
-            str: Type in `str`.
-
-        """
-        return self.polyline_type.as_str()
+        norm = np.clip(np.linalg.norm(diff, axis=-1, keepdims=True), a_min=1e-6, a_max=1e9)
+        return np.divide(diff, norm)
 
     def __len__(self) -> int:
         return len(self.waypoints)
 
     def is_empty(self) -> bool:
-        """
-        Indicate whether waypoints is empty array.
+        """Indicate whether waypoints is empty array.
 
         Returns
         -------
@@ -148,21 +135,19 @@ class Polyline:
         """
         return len(self.waypoints) == 0
 
-    def as_array(self, *, full: bool = False, as_3d: bool = True) -> NDArray:
-        """
-        Return the polyline as `NDArray`.
+    def as_array(self, *, full: bool = False, as_3d: bool = True) -> NDArrayF32:
+        """Return the polyline as `NDArray`.
 
         Args:
         ----
-            full (bool, optional): Indicates whether to return
-                `(x, y, z, dx, dy, dz, type_id)`. If `False`, returns `(x, y, z)`.
-                Defaults to False.
+            full (bool, optional): Indicates whether to return `(x, y, z, dx, dy, dz, type_id)`.
+                If `False`, returns `(x, y, z)`. Defaults to False.
             as_3d (bool, optional): If `True` returns array containing 3D coordinates.
                 Otherwise, 2D coordinates. Defaults to True.
 
         Returns:
         -------
-            NDArray: Polyline array.
+            NDArrayF32: Polyline array.
 
         """
         if full:
@@ -174,7 +159,7 @@ class Polyline:
                 )
 
             shape = self.waypoints.shape[:-1]
-            type_id = np.full((*shape, 1), self.type_id)
+            type_id = np.full((*shape, 1), self.polyline_type.value)
             return (
                 np.concatenate([self.xyz, self.dxyz, type_id], axis=1, dtype=np.float32)
                 if as_3d
