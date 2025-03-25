@@ -111,12 +111,6 @@ class MTRNode(Node):
         # ROS parameters
         descriptor = ParameterDescriptor(dynamic_typing=True)
 
-        build_only = (
-            self.declare_parameter("build_only", descriptor=descriptor)
-            .get_parameter_value()
-            .bool_value
-        )
-
         model_config_path = (
             self.declare_parameter("model_config", descriptor=descriptor)
             .get_parameter_value()
@@ -241,8 +235,6 @@ class MTRNode(Node):
         self.model.cuda()
         self.model, _ = load_checkpoint(self.model, checkpoint_path, is_distributed=is_distributed)
         self.count = 0
-        if build_only:
-            exit(0)
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
