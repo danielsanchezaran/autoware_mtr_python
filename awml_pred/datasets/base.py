@@ -191,24 +191,10 @@ class BaseDataset(Dataset, metaclass=ABCMeta):
             logging.warning("Failed to parse the number of modes, use 6")
             eval_topk = 6
 
-        if self.dataset == DatasetName.WAYMO:
-            from awml_pred.evaluation import waymo_evaluation
+        from awml_pred.evaluation import common_evaluation, evaluation_result_as_table
 
-            metric_results, result_format_str = waymo_evaluation(
-                eval_data=eval_data,
-                eval_topk=eval_topk,
-            )
-
-            metric_result_str = "\n"
-            for key, item in metric_results.items():
-                metric_result_str += f"{key}: {item:.4f} \n"
-            metric_result_str += "\n"
-            metric_result_str += result_format_str
-        else:
-            from awml_pred.evaluation import common_evaluation, evaluation_result_as_table
-
-            metric_results = common_evaluation(eval_data, self.agent_types)
-            metric_result_str = evaluation_result_as_table(metric_results, self.agent_types)
+        metric_results = common_evaluation(eval_data, self.agent_types)
+        metric_result_str = evaluation_result_as_table(metric_results, self.agent_types)
         return metric_result_str, metric_results
 
     def collate_batch(

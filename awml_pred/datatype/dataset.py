@@ -10,7 +10,6 @@ class DatasetName(str, Enum):
 
     ARGOVERSE = "ARGOVERSE"
     T4 = "T4"
-    WAYMO = "WAYMO"
 
     @classmethod
     def from_str(cls, name: str) -> DatasetName:
