@@ -14,8 +14,7 @@
 
     # labels: ["VEHICLE", "PEDESTRIAN", "MOTORCYCLIST", "CYCLIST", "BUS"]
     checkpoint_path: "$(var data_path)/mtr_best.pth"
-    model_config: "$(find-pkg-share autoware_mtr_python)/config/mtr_waymo.yaml"
-    deploy_config: "$(find-pkg-share autoware_mtr_python)/config/mtr_static.yaml"
+    model_config: "$(find-pkg-share autoware_mtr_python)/config/mtr.yaml"
     lanelet_file: "$(find-pkg-share autoware_mtr_python)/config/odaiba.lanelet2_map.osm"
     intention_point_file: "$(find-pkg-share autoware_mtr_python)/data/cluster64_dict.pkl"
 

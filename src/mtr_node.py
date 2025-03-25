@@ -47,7 +47,6 @@ from autoware_perception_msgs.msg import TrackedObjects
 from awml_pred.dataclass import AWMLStaticMap
 from awml_pred.common import Config, load_checkpoint
 from awml_pred.models import build_model
-from awml_pred.deploy.apis.torch2onnx import _load_inputs
 from utils.lanelet_converter import convert_lanelet
 from utils.constant import MAP_TYPE_COLORS
 from utils.load import LoadIntentionPoint
@@ -120,12 +119,6 @@ class MTRNode(Node):
 
         model_config_path = (
             self.declare_parameter("model_config", descriptor=descriptor)
-            .get_parameter_value()
-            .string_value
-        )
-
-        deploy_config_path = (
-            self.declare_parameter("deploy_config", descriptor=descriptor)
             .get_parameter_value()
             .string_value
         )
@@ -247,7 +240,6 @@ class MTRNode(Node):
         self.model.eval()
         self.model.cuda()
         self.model, _ = load_checkpoint(self.model, checkpoint_path, is_distributed=is_distributed)
-        self.deploy_cfg = Config.from_file(deploy_config_path)
         self.count = 0
         if build_only:
             exit(0)

@@ -3,6 +3,7 @@
 ## Overview
 
 The `autoware_mtr_python` package is part of the Autoware Universe project, specifically within the perception module. This package provides functionalities for the MTR (Motion Transformer) node implemented in `mtr_node.py`.  For more information about the MTR model, please refer to the original paper publication: [Motion Transformer with Global Intention Localization and Local Movement Refinement]{https://arxiv.org/abs/2209.13508} by Shi et. al.
+Furthermore, this project takes many of its tools from the [AWMLprediction repository]{https://github.com/tier4/AWMLprediction}.
 
 ## Main Functionality
 

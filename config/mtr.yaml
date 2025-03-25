@@ -1,6 +1,6 @@
 custom_imports: [projects.MTR.mtr]
 
-work_dir: ./work_dir/mtr_av2
+work_dir: .
 start_epoch: 0
 max_epoch: 30
 ckpt_save_interval: 5
@@ -16,11 +16,11 @@ dataset:
 
   train:
     name: &DATASET_TYPE MTRDataset
-    data_root: &DATA_ROOT data/argoverse
+    data_root: &DATA_ROOT data/
     scenario_dir: processed_scenarios_training
     ann_file: processed_scenarios_training_infos.pkl
     agent_types:
-      &AGENT_TYPES ["VEHICLE", "PEDESTRIAN", "MOTORCYCLIST", "CYCLIST", "BUS"]
+      &AGENT_TYPES ["TYPE_VEHICLE", "TYPE_PEDESTRIAN", "TYPE_CYCLIST"]
     transforms:
       - name: FilterScenario
         filters:
@@ -35,7 +35,7 @@ dataset:
         center_offset: &MAP_CENTER_OFFSET [30.0, 0.0]
       - name: LoadFutureAnnotation
       - name: LoadIntentionPoint
-        filepath: &INTENTION_POINT_FILE ./projects/MTR/data/av2/cluster64_dict.pkl
+        filepath: &INTENTION_POINT_FILE ./projects/
     predict_all_agents: &PREDICT_ALL_AGENTS false
 
   test:
@@ -69,7 +69,7 @@ model:
 
     agent_polyline_encoder:
       name: PointNetPolylineEncoder
-      in_channels: 32 # NUM_INPUT_ATTR_AGENT + 1
+      in_channels: 30 # NUM_INPUT_ATTR_AGENT + 1
       hidden_dim: 256 # NUM_CHANNEL_IN_MLP_AGENT
       num_layers: 3 # NUM_LAYER_IN_MLP_AGENT
       out_channels: &D_MODEL 256 # D_MODEL
