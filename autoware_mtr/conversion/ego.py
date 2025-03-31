@@ -14,7 +14,7 @@ __all__ = ("from_odometry", "convert_transform_stamped")
 
 
 def from_trajectory_point(point: TrajectoryPoint, uuid: str, header: Header, label_id: int, size: NDArray) -> tuple[AgentState, OriginalInfo]:
-    timestamp = timestamp2ms(header=header)
+    timestamp = timestamp2ms(header=header) * 1e-3  # Requires microseconds
     pose = point.pose
     xyz = np.array((pose.position.x, pose.position.y, pose.position.z))
 
