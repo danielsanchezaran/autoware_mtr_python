@@ -603,7 +603,7 @@ class MTRNode(Node):
         past_xyz_size = np.ones((B, N, T, 3), dtype=np.int32)
         past_vxy = np.ones((B, N, T, 2), dtype=np.float32)
         yaw_embed = np.ones((B, N, T, 2), dtype=np.float32)
-        timestamps = np.arange(0, T * 0.1, 0.1, dtype=np.float32)
+        timestamps = np.arange(0, T * 100000.0, 100000.0, dtype=np.float32)
         time_embed = np.zeros((B, N, T, T + 1), dtype=np.float32)
         time_embed[:, :, np.arange(T), np.arange(T)] = 1
         time_embed[:, :, :T, -1] = timestamps
