@@ -51,7 +51,7 @@ from utils.constant import MAP_TYPE_COLORS
 from utils.load import LoadIntentionPoint
 from autoware_mtr.conversion.ego import from_odometry, from_trajectory_point
 from autoware_mtr.conversion.tracked_object import from_tracked_objects
-from autoware_mtr.conversion.misc import timestamp2ms, yaw_from_quaternion
+from autoware_mtr.conversion.misc import timestamp2us, yaw_from_quaternion
 from autoware_mtr.conversion.trajectory import get_relative_histories, order_from_closest_to_furthest, to_trajectories, _yaw_to_quaternion
 from autoware_mtr.dataclass.static_map import AWMLStaticMap
 from autoware_mtr.datatype import AgentLabel
@@ -477,12 +477,12 @@ class MTRNode(Node):
         self._prev_trajectory = msg
 
     def _tracked_objects_callback(self, msg: TrackedObjects) -> None:
-        timestamp = timestamp2ms(msg.header)
+        timestamp = timestamp2us(msg.header)
         states, infos = from_tracked_objects(msg)
         self._history.update(states, infos)
 
     def _odometry_callback(self, msg: Odometry) -> None:
-        timestamp = timestamp2ms(msg.header)
+        timestamp = timestamp2us(msg.header)
         self._history.remove_invalid(timestamp, self._timestamp_threshold)
 
         # update agent history
@@ -492,23 +492,23 @@ class MTRNode(Node):
             label_id=AgentLabel.VEHICLE,
             size=self.ego_dimensions,
         )
+        self.current_odometry = deepcopy(msg)
 
     def _callback(self) -> None:
         # remove invalid ancient agent history
         if self.current_ego is None or self.current_ego_info is None:
             return
-
         self._history.update_state(self.current_ego, self.current_ego_info)
         if self.count < self._num_timestamps:
             self.count = self.count + 1
             return
 
         true_ego_state = deepcopy(self.current_ego)
-        ego_states = [self.current_ego]
-        infos = [self.current_ego_info]
-        histories = [self._history]
+        ego_states = [deepcopy(self.current_ego)]
+        infos = [deepcopy(self.current_ego_info)]
+        histories = [deepcopy(self._history)]
         requires_concatenation = [False]
-        uuids = [self._ego_uuid]
+        uuids = [deepcopy(self._ego_uuid)]
 
         propagation_required = self.propagate_future_states or self.add_left_bias_history or self.add_right_bias_history
 
@@ -614,7 +614,6 @@ class MTRNode(Node):
 
         trajectory_mask = torch.ones(
             [B, N, T], dtype=torch.bool).cuda()
-
         for b in range(len(target_ids)):
             for n in range(len(agent_histories)):
                 history = agent_histories[b * N + n]
@@ -636,6 +635,18 @@ class MTRNode(Node):
                     past_xyz_size[b, n, t, 2] = state.size[2]
                     trajectory_mask[b, n, t] = state.is_valid
 
+        for b in range(len(target_ids)):
+            for n in range(len(agent_histories)):
+                history = agent_histories[b * N + n]
+                for t, state in enumerate(history):
+                    if t < T-1:
+                        print("state.vxy", np.linalg.norm(state.vxy))
+                        pos_diff = -state.xyz[:2] + past_xyz[b, n, t + 1, :2]
+                        print("pos_diff", pos_diff)
+                        time_diff = (-state.timestamp + time_embed[b, n, t + 1, -1]) * 1e-6
+                        vel_vec = np.divide(pos_diff, time_diff, where=time_diff != 0)
+                        print("vel_vec val", np.linalg.norm(vel_vec))
+
         vel_diff = np.diff(past_vxy, axis=2, prepend=past_vxy[..., 0, :][:, :, None, :])
         accel = vel_diff / 0.1
         accel[:, :, 0, :] = accel[:, :, 1, :]
@@ -654,6 +665,41 @@ class MTRNode(Node):
             dtype=np.float32,
         )
         return embedded_inputs, last_xyz, trajectory_mask
+
+    def recalculate_history_velocities(self, histories: List[deque[AgentState]]):
+        """Recalculate velocities in the history.
+        Args:
+            histories (List[deque[AgentState]]): List of agent histories.
+        """
+        relative_histories = []
+
+        for original_history in histories:
+            history = deepcopy(original_history)
+            for j in range(len(history)):
+                print("history, before ", history[j].vxy, "yaw", history[j].yaw)
+            for i in range(len(original_history)):
+                pos_first = original_history[i-1].xy if i > 0 else original_history[i].xy
+                pos_last = original_history[i +
+                                            1].xy if i < len(original_history) - 1 else original_history[i].xy
+                pos_diff = pos_last - pos_first
+
+                time_last = original_history[i -
+                                             1].timestamp if i > 0 else original_history[i].timestamp
+                time_first = original_history[i+1].timestamp if i < len(
+                    original_history) - 1 else original_history[i].timestamp
+                time_diff = (time_last - time_first) * 1e-6
+                vel_vec = np.divide(pos_diff, time_diff, where=time_diff != 0)
+                vel = np.linalg.norm(vel_vec)
+                state = original_history[i]
+                yaw = original_history[i].yaw
+                vxy = np.array([vel * math.cos(yaw), vel * math.sin(yaw)])
+                relative_state = AgentState(uuid=state.uuid, timestamp=state.timestamp, label_id=state.label_id, xyz=state.xyz,
+                                            size=state.size, yaw=yaw, vxy=vxy.reshape((2,)), is_valid=state.is_valid)
+                history.append(relative_state)
+            relative_histories.append(history)
+            for j in range(len(history)):
+                print("history, after ", history[j].vxy, "yaw", history[j].yaw)
+        return relative_histories
 
     def _preprocess(
         self,
@@ -677,6 +723,7 @@ class MTRNode(Node):
             current_ego, history.histories.values())
         relative_histories = get_relative_histories(
             [current_ego], sorted_histories)
+        relative_histories = self.recalculate_history_velocities(relative_histories)
         embedded_inputs, last_xyz, trajectory_mask = self.get_embedded_inputs(relative_histories, [
                                                                               0])
         return embedded_inputs, polyline_info, last_xyz, trajectory_mask

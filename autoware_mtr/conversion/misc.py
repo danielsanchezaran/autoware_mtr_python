@@ -14,7 +14,19 @@ def timestamp2ms(header: Header) -> float:
     Returns:
         float: Timestamp in [ms].
     """
-    return header.stamp.sec * 10e3 + header.stamp.nanosec * 10e-6
+    return header.stamp.sec * 1e3 + header.stamp.nanosec * 1e-6
+
+
+def timestamp2us(header: Header) -> float:
+    """Convert ROS timestamp to microseconds.
+
+    Args:
+        header (Header): ROS msg header.
+
+    Returns:
+        float: Timestamp in [us].
+    """
+    return header.stamp.sec * 1e6 + header.stamp.nanosec * 1e-3
 
 
 def yaw_from_quaternion(orientation: RosQuaternion) -> float:

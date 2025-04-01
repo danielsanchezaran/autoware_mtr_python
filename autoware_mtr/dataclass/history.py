@@ -41,8 +41,8 @@ class AgentHistory:
         uuid = state.uuid
 
         # Check if this UUID exists in histories; if not, initialize with unique AgentState instances
-        if uuid not in self.histories:
-            # print(f"Initializing history for UUID: {uuid}")
+        if uuid not in self.histories.keys():
+            print(f"Initializing history for UUID: {uuid}")
             self.histories[uuid] = deque(
                 [AgentState(uuid=uuid) for _ in range(self.max_length)],
                 maxlen=self.max_length,

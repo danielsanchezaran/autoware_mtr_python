@@ -7,14 +7,14 @@ from std_msgs.msg import Header
 import numpy as np
 from numpy.typing import NDArray
 
-from .misc import timestamp2ms
+from .misc import timestamp2us
 from .misc import yaw_from_quaternion
 
 __all__ = ("from_odometry", "convert_transform_stamped")
 
 
 def from_trajectory_point(point: TrajectoryPoint, uuid: str, header: Header, label_id: int, size: NDArray) -> tuple[AgentState, OriginalInfo]:
-    timestamp = timestamp2ms(header=header) * 1e-3  # Requires microseconds
+    timestamp = timestamp2us(header=header)  # Requires microseconds
     pose = point.pose
     xyz = np.array((pose.position.x, pose.position.y, pose.position.z))
 
@@ -58,7 +58,7 @@ def from_odometry(
     Returns:
         tuple[AgentState, OriginalInfo]: Instanced AgentState.
     """
-    timestamp = timestamp2ms(msg.header)
+    timestamp = timestamp2us(msg.header)
     pose = msg.pose.pose
     xyz = np.array((pose.position.x, pose.position.y, pose.position.z))
 
@@ -90,7 +90,7 @@ def convert_transform_stamped(
     size: NDArray,
     vxy: NDArray,
 ) -> AgentState:
-    timestamp = timestamp2ms(tf_stamped.header)
+    timestamp = timestamp2us(tf_stamped.header)
 
     translation = tf_stamped.transform.translation
     xyz = np.array((translation.x, translation.y, translation.z))
