@@ -109,8 +109,6 @@ class MTRNode(Node):
         )
 
         self._timer = self.create_timer(0.1, self._callback)
-        self.pre_processed_input_saved = None
-        self.pre_processed_info_saved = None
         # ROS parameters
         descriptor = ParameterDescriptor(dynamic_typing=True)
 
@@ -394,44 +392,15 @@ class MTRNode(Node):
         out_trajectories.generator_info = [TrajectoryGeneratorInfo(
             generator_id=self._generator_uuid, generator_name=generator_name)]
 
-        for ego_state, info_, history, concatenate, uuid in zip(ego_states, infos, histories, requires_concatenation, uuids):
-            pre_processed_input = self._create_pre_processed_input(
-                ego_state, history) if self.pre_processed_input_saved is None else self.pre_processed_input_saved
+        for ego_state, info, history, concatenate, uuid in zip(ego_states, infos, histories, requires_concatenation, uuids):
+            pre_processed_input = self._create_pre_processed_input(ego_state, history)
             # inference
             current_target_trajectory, _ = history.target_as_trajectory(
                 uuid, latest=True)
             with torch.no_grad():
-                if np.linalg.norm(current_target_trajectory.xy - np.array([float(89417.76), float(42639.83)])) < 10.0:
-                    print("all close baby")
-                    print("ego_states\n", current_target_trajectory)
-                    print("loaded object data \n", self.loaded_data["obj_trajs"][..., -1, :])
-                    print("pre_processed_input\n", pre_processed_input["obj_trajs"][..., -1, :])
-                    # pre_processed_input["obj_trajs"] = self.loaded_data["obj_trajs"]
-                    # pre_processed_input["obj_trajs_mask"] = self.loaded_data["obj_trajs_mask"]
-                    # pre_processed_input["map_polylines"] = self.loaded_data["map_polylines"]
-                    # pre_processed_input["map_polylines_mask"] = self.loaded_data["map_polylines_mask"]
-                    # pre_processed_input["map_polylines_center"] = self.loaded_data["map_polylines_center"]
-                    # pre_processed_input["obj_trajs_last_pos"] = self.loaded_data["obj_trajs_last_pos"]
-                    # pre_processed_input["intention_points"] = self.loaded_data["intention_points"]
-                    # pre_processed_input["track_index_to_predict"] = self.loaded_data["track_index_to_predict"]
-                    self.pre_processed_input_saved = pre_processed_input
-                    self.pre_processed_info_saved = info_
-
                 pred_scores, pred_trajs = self.model(**pre_processed_input)
 
             # post-process
-
-            info = deepcopy(
-                info_) if self.pre_processed_info_saved is None else self.pre_processed_info_saved
-
-            current_target_trajectory.xy = np.array([float(89417.76), float(42639.83)])
-            info.kinematics.pose_with_covariance.pose.orientation.w = 0.9608108375729574
-            info.kinematics.pose_with_covariance.pose.orientation.x = -0.0010819215950705013
-            info.kinematics.pose_with_covariance.pose.orientation.y = 0.003750385418444999
-            info.kinematics.pose_with_covariance.pose.orientation.z = 0.2771773772464617
-
-            current_target_trajectory.yaw = yaw_from_quaternion(
-                info.kinematics.pose_with_covariance.pose.orientation)
             pred_scores, pred_trajs = self._postprocess(
                 pred_scores, pred_trajs, current_target_trajectory)
 
@@ -726,8 +695,6 @@ class MTRNode(Node):
 
         for original_history in histories:
             history = deepcopy(original_history)
-            for j in range(len(history)):
-                print("history, before ", history[j].vxy, "yaw", history[j].yaw)
             for i in range(len(original_history)):
                 pos_first = original_history[i-1].xy if i > 0 else original_history[i].xy
                 pos_last = original_history[i +
@@ -748,8 +715,6 @@ class MTRNode(Node):
                                             size=state.size, yaw=yaw, vxy=vxy.reshape((2,)), is_valid=state.is_valid)
                 history.append(relative_state)
             relative_histories.append(history)
-            for j in range(len(history)):
-                print("history, after ", history[j].vxy, "yaw", history[j].yaw)
         return relative_histories
 
     def _preprocess(
