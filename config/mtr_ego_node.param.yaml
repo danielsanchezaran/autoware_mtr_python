@@ -4,7 +4,7 @@
     timestamp_threshold: 100000000.0 # [ms]
     score_threshold: 0.0 # threshold of predicted score
     labels: ["VEHICLE"] # only ego vehicle is considered
-    ego_dimensions: [4.0,2.0,1.0] # [length, width, height]
+    ego_dimensions: [4.0,2.0,1.7] # [length, width, height]
     propagate_future_states: false
     add_left_bias_history: false
     add_right_bias_history: false
@@ -13,7 +13,7 @@
     future_state_propagation_sec: 3.0
 
     # labels: ["VEHICLE", "PEDESTRIAN", "MOTORCYCLIST", "CYCLIST", "BUS"]
-    checkpoint_path: "$(var data_path)/mtr_best.pth"
+    checkpoint_path: "$(var data_path)/shinagawa_odaiba_synthetic_extended_29.pth"
     model_config: "$(find-pkg-share autoware_mtr_python)/config/mtr.yaml"
     lanelet_file: "$(find-pkg-share autoware_mtr_python)/config/odaiba.lanelet2_map.osm"
     intention_point_file: "$(find-pkg-share autoware_mtr_python)/data/cluster64_dict.pkl"

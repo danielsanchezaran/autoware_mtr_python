@@ -109,7 +109,8 @@ class MTRNode(Node):
         )
 
         self._timer = self.create_timer(0.1, self._callback)
-
+        self.pre_processed_input_saved = None
+        self.pre_processed_info_saved = None
         # ROS parameters
         descriptor = ParameterDescriptor(dynamic_typing=True)
 
@@ -234,9 +235,10 @@ class MTRNode(Node):
 
         # Load Model
         self.model = build_model(cfg.model)
-        self.model.eval()
-        self.model.cuda()
         self.model, _ = load_checkpoint(self.model, checkpoint_path, is_distributed=is_distributed)
+        self.model.cuda()
+        self.model.eval()
+
         self.count = 0
 
         self._tf_buffer = Buffer()
@@ -254,6 +256,30 @@ class MTRNode(Node):
             "/debug_polylines",
             1,
         )
+
+        import pickle
+        import os
+        file_path = os.path.join(os.path.dirname(__file__), "batch_input0.pkl")
+        from awml_pred.common import items2device
+
+        with open(file_path, "rb") as file:
+            self.loaded_data = pickle.load(file)
+            self.loaded_data["obj_trajs"] = torch.Tensor(
+                np.array(self.loaded_data["obj_trajs"])).cuda()[0:1]
+            self.loaded_data["obj_trajs_mask"] = torch.Tensor(
+                np.array(self.loaded_data["obj_trajs_mask"])).cuda()[0:1]
+            self.loaded_data["map_polylines"] = torch.Tensor(
+                np.array(self.loaded_data["map_polylines"])).cuda()[0:1]
+            self.loaded_data["map_polylines_mask"] = torch.Tensor(
+                np.array(self.loaded_data["map_polylines_mask"])).cuda()[0:1]
+            self.loaded_data["map_polylines_center"] = torch.Tensor(
+                np.array(self.loaded_data["map_polylines_center"])).cuda()[0:1]
+            self.loaded_data["obj_trajs_last_pos"] = torch.Tensor(
+                np.array(self.loaded_data["obj_trajs_last_pos"])).cuda()[0:1]
+            self.loaded_data["intention_points"] = torch.Tensor(  # ???????
+                np.array(self.loaded_data["intention_points"])).cuda()[0:1]
+            self.loaded_data["track_index_to_predict"] = torch.tensor(
+                np.array(self.loaded_data["track_index_to_predict"]), dtype=torch.long).cuda()[0:1]
 
         # Add a callback for parameter changes
         self.add_on_set_parameters_callback(self._parameter_callback)
@@ -340,7 +366,7 @@ class MTRNode(Node):
         num_target, num_agent, num_time, num_feat = past_embed.shape
         pre_processed_input = {}
         pre_processed_input["obj_trajs"] = torch.Tensor(past_embed).cuda()
-        pre_processed_input["obj_trajs_mask"] = trajectory_mask
+        pre_processed_input["obj_trajs_mask"] = trajectory_mask.cuda()
         pre_processed_input["map_polylines"] = torch.Tensor(polyline_info["polylines"]).cuda()
         pre_processed_input["map_polylines_mask"] = torch.Tensor(
             polyline_info["polylines_mask"]).cuda()
@@ -368,15 +394,44 @@ class MTRNode(Node):
         out_trajectories.generator_info = [TrajectoryGeneratorInfo(
             generator_id=self._generator_uuid, generator_name=generator_name)]
 
-        for ego_state, info, history, concatenate, uuid in zip(ego_states, infos, histories, requires_concatenation, uuids):
-            pre_processed_input = self._create_pre_processed_input(ego_state, history)
+        for ego_state, info_, history, concatenate, uuid in zip(ego_states, infos, histories, requires_concatenation, uuids):
+            pre_processed_input = self._create_pre_processed_input(
+                ego_state, history) if self.pre_processed_input_saved is None else self.pre_processed_input_saved
             # inference
+            current_target_trajectory, _ = history.target_as_trajectory(
+                uuid, latest=True)
             with torch.no_grad():
+                if np.linalg.norm(current_target_trajectory.xy - np.array([float(89417.76), float(42639.83)])) < 10.0:
+                    print("all close baby")
+                    print("ego_states\n", current_target_trajectory)
+                    print("loaded object data \n", self.loaded_data["obj_trajs"][..., -1, :])
+                    print("pre_processed_input\n", pre_processed_input["obj_trajs"][..., -1, :])
+                    # pre_processed_input["obj_trajs"] = self.loaded_data["obj_trajs"]
+                    # pre_processed_input["obj_trajs_mask"] = self.loaded_data["obj_trajs_mask"]
+                    # pre_processed_input["map_polylines"] = self.loaded_data["map_polylines"]
+                    # pre_processed_input["map_polylines_mask"] = self.loaded_data["map_polylines_mask"]
+                    # pre_processed_input["map_polylines_center"] = self.loaded_data["map_polylines_center"]
+                    # pre_processed_input["obj_trajs_last_pos"] = self.loaded_data["obj_trajs_last_pos"]
+                    # pre_processed_input["intention_points"] = self.loaded_data["intention_points"]
+                    # pre_processed_input["track_index_to_predict"] = self.loaded_data["track_index_to_predict"]
+                    self.pre_processed_input_saved = pre_processed_input
+                    self.pre_processed_info_saved = info_
+
                 pred_scores, pred_trajs = self.model(**pre_processed_input)
 
             # post-process
-            current_target_trajectory, _ = history.target_as_trajectory(
-                uuid, latest=True)
+
+            info = deepcopy(
+                info_) if self.pre_processed_info_saved is None else self.pre_processed_info_saved
+
+            current_target_trajectory.xy = np.array([float(89417.76), float(42639.83)])
+            info.kinematics.pose_with_covariance.pose.orientation.w = 0.9608108375729574
+            info.kinematics.pose_with_covariance.pose.orientation.x = -0.0010819215950705013
+            info.kinematics.pose_with_covariance.pose.orientation.y = 0.003750385418444999
+            info.kinematics.pose_with_covariance.pose.orientation.z = 0.2771773772464617
+
+            current_target_trajectory.yaw = yaw_from_quaternion(
+                info.kinematics.pose_with_covariance.pose.orientation)
             pred_scores, pred_trajs = self._postprocess(
                 pred_scores, pred_trajs, current_target_trajectory)
 
@@ -409,8 +464,8 @@ class MTRNode(Node):
                 if np.linalg.norm(ego_state.xy - true_ego_state.xy) > 1e-3:
                     continue
                 header_map = Header()
-                header_map .stamp = self.get_clock().now().to_msg()
-                header_map .frame_id = "base_link"
+                header_map.stamp = self.get_clock().now().to_msg()
+                header_map.frame_id = "base_link"
                 self._pub_debug_polylines(pre_processed_input["map_polylines"].cpu().detach().numpy(),
                                           pre_processed_input["map_polylines_mask"].cpu().detach().numpy(), header_map, None, pre_processed_input["map_polylines_center"].cpu().detach().numpy())
         return out_trajectories, out_objects
@@ -563,21 +618,20 @@ class MTRNode(Node):
         """
         if isinstance(pred_scores, torch.Tensor):
             pred_scores = pred_scores.cpu().detach().numpy()
-        if isinstance(pred_trajs, torch.Tensor):
-            pred_trajs = pred_trajs.cpu().detach().numpy()
-        # predicted traj point info is X,Y,Xmean,Ymean,Variance,Vx,Vy
 
-        num_agent, num_mode, num_future, num_feat = pred_trajs.shape
+        # predicted traj point info is X,Y,Xmean,Ymean,Variance,Vx,Vy
+        num_all_batch, num_mode, num_future, num_feat = pred_trajs.shape
         assert num_feat == 7, f"Expected predicted feature is (X, Y, Xmean, Ymean, Variance, Vx, Vy), but got {num_feat}"
 
         # transform from agent centric coords to world coords
 
         # first 2 elements are xy then we use the negative ego rotation. reshape, I dont know
         # each trajectory is in  the ref frame of its own agent. For ego we might use TF ?
-        pred_trajs[..., :2] = rotate_along_z(
-            pred_trajs.reshape(num_agent, -1, num_feat)[..., :2], -current_agent.yaw
-        ).reshape(num_agent, num_mode, num_future, 2)
-        pred_trajs[..., :2] += current_agent.xy[:, None, None, :]
+        pred_trajs = rotate_along_z(
+            points=pred_trajs.view(num_all_batch, num_mode * num_future, num_feat).cpu().numpy(), angle=current_agent.yaw
+        ).reshape(num_all_batch, num_mode, num_future, num_feat)
+
+        pred_trajs[:, :, :, 0:2] += current_agent.xy[:, None, None, :]
 
         # sort by score
         pred_scores = softmax(pred_scores, axis=1)
@@ -600,10 +654,10 @@ class MTRNode(Node):
 
         past_xyz = np.ones((B, N, T, 3), dtype=np.float32)
         last_xyz = np.ones((B, N, 1, 3), dtype=np.float32)
-        past_xyz_size = np.ones((B, N, T, 3), dtype=np.int32)
+        past_xyz_size = np.ones((B, N, T, 3), dtype=np.float32)
         past_vxy = np.ones((B, N, T, 2), dtype=np.float32)
         yaw_embed = np.ones((B, N, T, 2), dtype=np.float32)
-        timestamps = np.arange(0, T * 100000.0, 100000.0, dtype=np.float32)
+        timestamps = np.arange(0, T * 0.1, 0.1, dtype=np.float32)
         time_embed = np.zeros((B, N, T, T + 1), dtype=np.float32)
         time_embed[:, :, np.arange(T), np.arange(T)] = 1
         time_embed[:, :, :T, -1] = timestamps
@@ -613,7 +667,7 @@ class MTRNode(Node):
         type_onehot[:, 0, :, num_type + 1] = 1             # scenario.ego_index replaced by 0
 
         trajectory_mask = torch.ones(
-            [B, N, T], dtype=torch.bool).cuda()
+            [B, N, T], dtype=torch.bool)
         for b in range(len(target_ids)):
             for n in range(len(agent_histories)):
                 history = agent_histories[b * N + n]
@@ -640,12 +694,9 @@ class MTRNode(Node):
                 history = agent_histories[b * N + n]
                 for t, state in enumerate(history):
                     if t < T-1:
-                        print("state.vxy", np.linalg.norm(state.vxy))
                         pos_diff = -state.xyz[:2] + past_xyz[b, n, t + 1, :2]
-                        print("pos_diff", pos_diff)
                         time_diff = (-state.timestamp + time_embed[b, n, t + 1, -1]) * 1e-6
                         vel_vec = np.divide(pos_diff, time_diff, where=time_diff != 0)
-                        print("vel_vec val", np.linalg.norm(vel_vec))
 
         vel_diff = np.diff(past_vxy, axis=2, prepend=past_vxy[..., 0, :][:, :, None, :])
         accel = vel_diff / 0.1
@@ -725,7 +776,7 @@ class MTRNode(Node):
             [current_ego], sorted_histories)
         relative_histories = self.recalculate_history_velocities(relative_histories)
         embedded_inputs, last_xyz, trajectory_mask = self.get_embedded_inputs(relative_histories, [
-                                                                              0])
+            0])
         return embedded_inputs, polyline_info, last_xyz, trajectory_mask
 
     def interpolate_trajectory(self, original_traj: Trajectory, start_time: float) -> Trajectory:
@@ -744,13 +795,13 @@ class MTRNode(Node):
 
         # Extract time, positions, velocities, and yaw
         times = np.array([p.time_from_start.sec + p.time_from_start.nanosec *
-                         1e-9 for p in original_traj.points])
+                          1e-9 for p in original_traj.points])
         x = np.array([p.pose.position.x for p in original_traj.points])
         y = np.array([p.pose.position.y for p in original_traj.points])
         vx = np.array([p.longitudinal_velocity_mps for p in original_traj.points])
         vy = np.array([p.lateral_velocity_mps for p in original_traj.points])
         yaw = np.array([yaw_from_quaternion(p.pose.orientation)
-                       for p in original_traj.points])  # Extract yaw
+                        for p in original_traj.points])  # Extract yaw
 
         # Find the closest index BEFORE start_time
         idx_start = np.searchsorted(times, start_time) - 1

@@ -25,7 +25,7 @@ def to_predicted_objects(
         header (Header): Header of the input message.
         infos (Sequence[OriginalInfo]): List of original message information.
         pred_scores (NDArray): Predicted score tensor in the shape of (N, M).
-        pred_trajs (NDArray): Predicted trajectory tensor in the shape of (N, M, T, 4).
+        pred_trajs (NDArray): Predicted trajectory tensor in the shape of (N, M, T, 7).
         score_threshold (float): Threshold value of score.
 
     Returns:
