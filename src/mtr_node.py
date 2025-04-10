@@ -20,6 +20,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.parameter import Parameter
 from std_msgs.msg import Header
@@ -125,12 +126,6 @@ class MTRNode(Node):
             self.declare_parameter("score_threshold", descriptor=descriptor)
             .get_parameter_value()
             .double_value
-        )
-
-        self._publish_debug_polyline_batch = (
-            self.declare_parameter("publish_debug_polyline_batch", descriptor=descriptor)
-            .get_parameter_value()
-            .bool_value
         )
 
         self._publish_debug_polyline_map = (
@@ -313,11 +308,16 @@ class MTRNode(Node):
         for param in params:
             if param.name == "propagate_future_states":
                 self.propagate_future_states = param.value
-
+            if param.name == "add_left_bias_history":
+                self.add_left_bias_history = param.value
+            if param.name == "add_right_bias_history":
+                self.add_right_bias_history = param.value
+            if param.name == "future_state_propagation_sec":
+                self.future_state_propagation_sec = param.value
+            if param.name == "publish_debug_polyline_map":
+                self._publish_debug_polyline_map = param.value
         # Return success
-        return rclpy.parameter.ParameterValue(
-            successful=True
-        )
+        return SetParametersResult(successful=True)
 
     def _create_pre_processed_input(self, current_ego: AgentState, history: AgentHistory):
         past_embed, polyline_info, ego_last_xyz, trajectory_mask = self._preprocess(
@@ -534,12 +534,6 @@ class MTRNode(Node):
 
         self._ego_trajectories_publisher.publish(ego_multiple_trajs)
         self._publisher.publish(pred_objs)
-        if self._publish_debug_polyline_batch:
-            header = Header()
-            header.stamp = self.get_clock().now().to_msg()
-            header.frame_id = "map"
-            self._pub_debug_polylines(self._batch_polylines,
-                                      self._batch_polylines_mask, header)
 
     def _postprocess(
         self,
@@ -809,7 +803,7 @@ class MTRNode(Node):
             f"Interpolated trajectory points: {len(interpolated_trajectory.points)}")
         self.get_logger().info(f"start {start_index} end {end_index}")
         for i in range(end_index):
-            point = interpolated_trajectory.points[i]
+            point = interpolated_trajectory.points[-1]
             state, info = from_trajectory_point(point=point, uuid=self._ego_uuid_future, timestamp=float(i)*0.1, label_id=AgentLabel.VEHICLE,
                                                 size=self.ego_dimensions)
             history.update_state(state, info)
