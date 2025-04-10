@@ -500,6 +500,18 @@ class MTRNode(Node):
         if propagation_required and self._prev_trajectory is not None and len(self._prev_trajectory.points) > 2:
             history_from_traj, future_ego_state, future_ego_info = self.get_ego_history_from_trajectory(
                 self._prev_trajectory, self.future_state_propagation_sec)
+            self.get_logger().info("----------History from trajectory-------")
+            for history in history_from_traj.histories.values():
+                for state_info in history:
+                    self.get_logger().info(f"{state_info}")
+            self.get_logger().info("----------------------------------------")
+
+            self.get_logger().info("----------History from odom-------")
+            for history in self._history.histories.values():
+                for state_info in history:
+                    self.get_logger().info(f"{state_info}")
+            self.get_logger().info("----------------------------------------")
+
             if history_from_traj is not None and self.propagate_future_states:
                 ego_states.append(future_ego_state)
                 infos.append(future_ego_info)
@@ -733,7 +745,7 @@ class MTRNode(Node):
         idx_start = max(0, idx_start)  # Ensure valid index
 
         # Define new time samples every 0.1s for 1 second interval
-        t_interp = np.arange(start_time, start_time + 1.0 + 1e-6, 0.1)
+        t_interp = np.arange(start_time, start_time + 1.0 + 1e-3, 0.1)
 
         # Ensure valid interpolation range
         if times[-1] < t_interp[-1]:  # Not enough data to interpolate fully
@@ -758,6 +770,8 @@ class MTRNode(Node):
         # Create a new Trajectory message
         new_traj = Trajectory()
 
+        self.get_logger().info(f"interp time len: { len(t_interp)}")
+
         for i, t in enumerate(t_interp):
             traj_point = TrajectoryPoint()
             traj_point.pose.position.x = float(x_interp[i])
@@ -773,7 +787,7 @@ class MTRNode(Node):
             traj_point.pose.orientation = _yaw_to_quaternion(yaw_interp[i])
 
             new_traj.points.append(traj_point)
-
+        self.get_logger().info(f"interp new_traj len: { len(new_traj.points)}")
         return new_traj
 
     def get_ego_history_from_trajectory(self, previous_best_trajectory: Trajectory, time_start: float):
@@ -790,10 +804,13 @@ class MTRNode(Node):
             previous_best_trajectory, time_start)
         history = AgentHistory(max_length=self._num_timestamps)
         start_index = 0
-        end_index = len(interpolated_trajectory.points) - 1
-        for i in range(start_index, end_index):
+        end_index = len(interpolated_trajectory.points)
+        self.get_logger().info(
+            f"Interpolated trajectory points: {len(interpolated_trajectory.points)}")
+        self.get_logger().info(f"start {start_index} end {end_index}")
+        for i in range(end_index):
             point = interpolated_trajectory.points[i]
-            state, info = from_trajectory_point(point=point, uuid=self._ego_uuid_future, header=previous_best_trajectory.header, label_id=AgentLabel.VEHICLE,
+            state, info = from_trajectory_point(point=point, uuid=self._ego_uuid_future, timestamp=float(i)*0.1, label_id=AgentLabel.VEHICLE,
                                                 size=self.ego_dimensions)
             history.update_state(state, info)
         return history, state, info

@@ -13,8 +13,8 @@ from .misc import yaw_from_quaternion
 __all__ = ("from_odometry", "convert_transform_stamped")
 
 
-def from_trajectory_point(point: TrajectoryPoint, uuid: str, header: Header, label_id: int, size: NDArray) -> tuple[AgentState, OriginalInfo]:
-    timestamp = timestamp2us(header=header)  # Requires microseconds
+def from_trajectory_point(point: TrajectoryPoint, uuid: str, timestamp: float, label_id: int, size: NDArray) -> tuple[AgentState, OriginalInfo]:
+    # Requires microseconds
     pose = point.pose
     xyz = np.array((pose.position.x, pose.position.y, pose.position.z))
 
