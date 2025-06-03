@@ -1,4 +1,4 @@
-# Autoware MTR Python Package
+# Autoware MTR Python Package [Archieved, please visit https://github.com/tier4/autoware_mtr_python for latest version of this repo]
 
 ## Overview
 
